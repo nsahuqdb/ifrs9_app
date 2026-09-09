@@ -1,0 +1,21 @@
+# Post-model ECL overlays (management adjustments). Managed via the app UI
+# (Config > ECL overlays). Each overlay id is a bundle of rules with its own
+# approval state. Applied as the last step on model ECL; Stage 3 untouched;
+# a contract matched by >1 rule aborts the run.
+overlays:
+- id: ov1
+  owner: FRM
+  status: draft
+  created_at: '2026-09-03'
+  transitions:
+  - to: draft
+    by: nsahu
+    at: 2026-09-03T14:55:30
+    reason: created
+  rules:
+  - method: uplift_pct
+    level: portfolio
+    target: Business Finance
+    value: 0.1
+    comment: ryg
+

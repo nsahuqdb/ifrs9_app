@@ -1,0 +1,27 @@
+# =============================================================================
+# config/calculator_versions.yml
+#
+# Registry of CALCULATOR (code) versions.
+#
+# The "calculator" is the R computation code under R/. Because deployment may
+# not always go through git, we track code versions here explicitly rather
+# than relying on a git SHA. Each pipeline run records which calculator
+# version was selected AND a fingerprint (md5 of all R/*.R files) of the code
+# that actually executed, so any run can be traced to the exact calculator
+# that produced it — and we can flag if the deployed code no longer matches
+# the registered fingerprint for that version.
+#
+# Manage these from the app: Config -> Calculator versions.
+#   - "active" is the version selected by default for new runs.
+#   - Registering a version stamps it with the current code fingerprint.
+# =============================================================================
+
+active: "v1.0"
+
+versions:
+  - id: "v1.0"
+    label: "v1.0 — V4 parity"
+    description: "Initial production calculator reproducing the V4 Excel ETL."
+    created_at: "2026-06-05"
+    created_by: "nsahu"
+    code_hash: ""        # empty until registered/fingerprinted from the app

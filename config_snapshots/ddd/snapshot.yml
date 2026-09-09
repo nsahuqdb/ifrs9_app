@@ -1,0 +1,22 @@
+schema_version: '1.0'
+label: ddd
+status: tested
+description: dd
+created_by: nsahu
+created_at: 2026-09-03T14:43:07+0300
+parent: ~
+base_source: live
+code_sha_at_creation: .na.character
+approved_by: ~
+approved_at: ~
+approval_reason: ~
+path: C:\Users\nsahu\Downloads\ifrs9_app_v1.0.1\config_snapshots\ddd
+transitions:
+- at: 2026-09-03T14:52:05+0300
+  by: nsahu
+  from: draft
+  to: tested
+  reason: sdss
+tested_by: nsahu
+tested_at: 2026-09-03T14:52:05+0300
+

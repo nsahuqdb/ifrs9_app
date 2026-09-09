@@ -1,0 +1,14 @@
+Package: ifrs9app
+Type: Shiny
+Title: IFRS 9 ECL Shiny Application (QDB)
+Version: 1.0.0
+Description:
+    User interface for the QDB IFRS 9 ECL pipeline. Calculation, reporting and
+    analytics are provided by the ifrs9qdb package; this project carries only
+    the Shiny modules, the per-quarter configuration and the run archive.
+Depends:
+    ifrs9qdb (>= 1.0.1)
+Imports:
+    shiny, bslib, reactable, echarts4r, DT, shinyAce, htmltools, htmlwidgets,
+    jsonlite, yaml, readr, tibble, markdown, commonmark, base64enc, later,
+    curl, openssl, httr, httr2

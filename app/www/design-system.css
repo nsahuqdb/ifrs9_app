@@ -1,0 +1,343 @@
+/* =============================================================================
+   IFRS9 ETL — design system
+   A modern, bank-appropriate restyle layered over bslib/Bootstrap 5.
+   Only visual: no functional selectors are relied upon by the server.
+   ========================================================================== */
+:root {
+  --qdb-plum:      #5b1f6e;
+  --qdb-plum-700:  #4a1758;
+  --qdb-plum-050:  #f7f4f9;
+  --qdb-plum-100:  #efe7f3;
+  --qdb-ink:       #1f2430;
+  --qdb-ink-600:   #4b5563;
+  --qdb-ink-400:   #8a94a6;
+  --qdb-line:      #e7e2ee;
+  --qdb-bg:        #f5f6f9;
+  --qdb-card:      #ffffff;
+  --qdb-teal:      #0d9488;
+  --qdb-radius:    14px;
+  --qdb-radius-sm: 10px;
+  --qdb-shadow:    0 1px 2px rgba(23,20,40,.05), 0 4px 16px rgba(23,20,40,.04);
+  --qdb-shadow-lg: 0 8px 30px rgba(23,20,40,.10);
+  --ok:   #059669; --ok-bg:#e7f6f0;
+  --warn: #d97706; --warn-bg:#fdf3e3;
+  --err:  #dc2626; --err-bg:#fce9e9;
+  --info: #2563eb; --info-bg:#e8effd;
+  --muted:#6b7280; --muted-bg:#eef1f5;
+}
+
+/* ---- base canvas ---- */
+body, .bslib-page-navbar > .navbar + div { background: var(--qdb-bg); }
+.qdb-page { width: 100%; margin: 0; padding: 26px 26px 60px; }
+body { color: var(--qdb-ink); -webkit-font-smoothing: antialiased; }
+h1,h2,h3,h4,h5,h6 { color: var(--qdb-ink); letter-spacing: -0.01em; }
+
+/* ---- page header block ---- */
+.qdb-hd { margin: 4px 0 20px; }
+.qdb-hd h2, .qdb-hd h3 { margin: 0; font-weight: 700; }
+.qdb-hd .sub { color: var(--qdb-ink-600); font-size: 14px; margin-top: 4px; }
+.qdb-hd-row { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+
+/* ---- cards ---- */
+.card, .bslib-card {
+  border: 1px solid var(--qdb-line) !important;
+  border-radius: var(--qdb-radius) !important;
+  box-shadow: var(--qdb-shadow);
+  background: var(--qdb-card);
+}
+.card-header, .bslib-card > .card-header {
+  background: #fff !important;
+  border-bottom: 1px solid var(--qdb-line) !important;
+  font-weight: 650; font-size: 15px; letter-spacing: -0.01em;
+  padding: 14px 18px;
+}
+.card-body { padding: 18px; }
+
+/* soft "section" card used across screens */
+.qdb-card { background: var(--qdb-card); border:1px solid var(--qdb-line);
+  border-radius: var(--qdb-radius); box-shadow: var(--qdb-shadow); padding: 18px; margin-bottom: 18px; }
+.qdb-card h5 { font-size: 14px; font-weight: 700; margin: 0 0 10px; text-transform: none; }
+
+/* ---- KPI stat tiles ---- */
+.qdb-stats { display:grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap:14px; margin-bottom:20px; }
+.qdb-stat { background:var(--qdb-card); border:1px solid var(--qdb-line); border-radius:var(--qdb-radius);
+  padding:14px 16px; box-shadow:var(--qdb-shadow); }
+.qdb-stat .v { font-size:24px; font-weight:750; line-height:1.1; font-variant-numeric:tabular-nums; letter-spacing:-0.02em; }
+.qdb-stat .k { font-size:12px; color:var(--qdb-ink-400); text-transform:uppercase; letter-spacing:.04em; margin-top:4px; }
+.qdb-stat.accent .v { color: var(--qdb-plum); }
+.qdb-stat.ok .v { color: var(--ok); }
+.qdb-stat.warn .v { color: var(--warn); }
+.qdb-stat.err .v { color: var(--err); }
+
+/* ---- pills / badges ---- */
+.pill, .qdb-pill {
+  display:inline-flex; align-items:center; gap:5px;
+  padding: 3px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 650;
+  letter-spacing: .01em; line-height:1.4; white-space:nowrap;
+}
+.pill-pass, .pill-approved, .qp-ok      { background:var(--ok-bg);   color:var(--ok); }
+.pill-warn, .pill-pending, .pill-pending_final, .qp-warn { background:var(--warn-bg); color:var(--warn); }
+.pill-error, .pill-rejected, .qp-err    { background:var(--err-bg);  color:var(--err); }
+.pill-info, .pill-tested, .qp-info      { background:var(--info-bg); color:var(--info); }
+.pill-suppr, .pill-draft, .pill-archived, .qp-muted { background:var(--muted-bg); color:var(--muted); }
+
+/* ---- buttons ---- */
+.btn { border-radius: 10px; font-weight: 600; padding: .5rem .95rem; transition: all .12s ease; }
+.btn-sm { border-radius: 8px; padding: .3rem .7rem; font-size: 12.5px; }
+.btn-primary { background: var(--qdb-plum); border-color: var(--qdb-plum); }
+.btn-primary:hover { background: var(--qdb-plum-700); border-color: var(--qdb-plum-700); transform: translateY(-1px); }
+.btn-outline-primary { color: var(--qdb-plum); border-color: #d9c9e2; }
+.btn-outline-primary:hover { background: var(--qdb-plum); border-color: var(--qdb-plum); }
+.btn-outline-secondary { border-color: var(--qdb-line); color: var(--qdb-ink-600); }
+.btn-outline-secondary:hover { background: var(--qdb-plum-050); color: var(--qdb-plum); border-color:#d9c9e2; }
+
+/* ---- inputs ---- */
+.form-control, .form-select, .selectize-input {
+  border-radius: 10px !important; border-color: var(--qdb-line) !important; font-size: 14px;
+  box-shadow: none !important;
+}
+.form-control:focus, .form-select:focus, .selectize-input.focus {
+  border-color: #c9a9d8 !important; box-shadow: 0 0 0 3px rgba(91,31,110,.12) !important;
+}
+label, .control-label { font-weight: 600; font-size: 13px; color: var(--qdb-ink-600); margin-bottom: 4px; }
+.small-muted { color: var(--qdb-ink-400); font-size: 12.5px; }
+
+/* ---- tabs (bslib navset_card_tab) ---- */
+.nav-tabs { border-bottom: 1px solid var(--qdb-line); gap: 2px; }
+.nav-tabs .nav-link {
+  border: none !important; color: var(--qdb-ink-600); font-weight: 600; font-size: 14px;
+  border-radius: 8px 8px 0 0; padding: 9px 15px;
+}
+.nav-tabs .nav-link:hover { background: var(--qdb-plum-050); color: var(--qdb-plum); }
+.nav-tabs .nav-link.active {
+  color: var(--qdb-plum) !important; background: transparent !important;
+  border-bottom: 2.5px solid var(--qdb-plum) !important;
+}
+
+/* ---- reactable ---- */
+.qdb-rt .rt-table { font-size: 13px; }
+.qdb-rt .rt-thead .rt-th {
+  background: #faf9fc; color: var(--qdb-ink-600); font-weight: 700; font-size: 11.5px;
+  text-transform: uppercase; letter-spacing: .03em; border-bottom: 1px solid var(--qdb-line);
+}
+.qdb-rt .rt-tbody .rt-td { border-bottom: 1px solid #f1eef5; padding: 9px 12px; }
+.qdb-rt .rt-tr:hover .rt-td { background: var(--qdb-plum-050); }
+.qdb-rt .rt-tr.-selected .rt-td { background: var(--qdb-plum-100) !important; }
+.reactable { border:1px solid var(--qdb-line); border-radius: var(--qdb-radius-sm); overflow:hidden; }
+
+/* generic small HTML tables kept for a few panels */
+.narrow-table { width:100%; border-collapse:collapse; }
+.narrow-table th { background:#faf9fc; color:var(--qdb-ink-600); font-size:11.5px;
+  text-transform:uppercase; letter-spacing:.03em; text-align:left; padding:8px 10px; border-bottom:1px solid var(--qdb-line); }
+.narrow-table td { padding:8px 10px; border-bottom:1px solid #f1eef5; font-size:13px; }
+.narrow-table tr:hover td { background: var(--qdb-plum-050); }
+
+/* ---- alerts ---- */
+.alert { border-radius: 12px; border: 1px solid transparent; font-size: 14px; }
+.alert-info    { background: var(--info-bg); color:#1e40af; border-color:#cddffb; }
+.alert-success { background: var(--ok-bg);   color:#065f46; border-color:#bfe8d8; }
+.alert-warning { background: var(--warn-bg); color:#92400e; border-color:#f6e0bb; }
+.alert-danger  { background: var(--err-bg);  color:#991b1b; border-color:#f4c9c9; }
+.alert-secondary { background:#f7f8fa; color:var(--qdb-ink-600); border-color:var(--qdb-line); }
+
+/* ---- navbar refinements (keep existing behaviour) ---- */
+.navbar { box-shadow: 0 1px 0 rgba(0,0,0,.04), 0 2px 12px rgba(91,31,110,.18);
+  background: linear-gradient(180deg, var(--qdb-plum) 0%, var(--qdb-plum-700) 100%) !important; }
+.navbar .navbar-brand { font-weight: 700; }
+
+/* ---- dl / definition lists (manifest) ---- */
+dl.row dt { color: var(--qdb-ink-400); font-weight:600; font-size:12.5px; padding-top:6px; }
+dl.row dd { font-size:13.5px; padding-top:6px; }
+
+/* ---- misc ---- */
+hr { border-color: var(--qdb-line); opacity: 1; }
+code { background: var(--qdb-plum-050); color: var(--qdb-plum-700); padding: .1em .35em; border-radius: 5px; font-size: 12.5px; }
+.qdb-empty { text-align:center; color:var(--qdb-ink-400); padding:40px 12px; }
+.qdb-empty .ico { font-size:26px; opacity:.4; margin-bottom:8px; }
+
+/* =============================================================================
+   Refinements (H78) — less "R app", more product
+   ========================================================================== */
+/* Wider, better-proportioned page; the navbar content aligns to the same rail */
+.qdb-page { width: 100%; max-width: none; margin: 0; padding: 22px 26px 64px; }
+.navbar > .container-fluid { max-width: none; }
+
+/* Page header: tighter, with a subtle rule under it */
+.qdb-hd { margin: 0 0 18px; padding-bottom: 14px; border-bottom: 1px solid var(--qdb-line); }
+.qdb-hd h3 { font-size: 26px; font-weight: 750; }
+.qdb-hd .sub { font-size: 13px; color: var(--qdb-ink-400); }
+
+/* KPI tiles: add a top accent bar, tighter type, hover lift */
+.qdb-stats { gap: 16px; }
+.qdb-stat { position: relative; overflow: hidden; padding: 16px 18px; transition: box-shadow .15s, transform .15s; }
+.qdb-stat::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; background: var(--qdb-line); }
+.qdb-stat.accent::before { background: var(--qdb-plum); }
+.qdb-stat.ok::before { background: var(--ok); }
+.qdb-stat.warn::before { background: var(--warn); }
+.qdb-stat.err::before { background: var(--err); }
+.qdb-stat:hover { box-shadow: var(--qdb-shadow-lg); transform: translateY(-2px); }
+.qdb-stat .v { font-size: 30px; font-weight: 800; }
+.qdb-stat .k { font-size: 11.5px; margin-top: 6px; }
+
+/* Reactable: give it room, style the built-in search + filter inputs so they
+   look designed, not default. Kill the horizontal scroll where we can. */
+.reactable { border-radius: 12px; }
+.qdb-rt .rt-search {
+  border: 1px solid var(--qdb-line); border-radius: 10px; padding: 8px 12px 8px 32px;
+  font-size: 13px; min-width: 240px; background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238a94a6' stroke-width='2.5'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M21 21l-4.3-4.3'/%3E%3C/svg%3E") no-repeat 11px center;
+}
+.qdb-rt .rt-search:focus { border-color:#c9a9d8; box-shadow:0 0 0 3px rgba(91,31,110,.12); outline:none; }
+.qdb-rt .rt-thead .rt-th-filter input, .qdb-rt .rt-td-filter input {
+  border: 1px solid var(--qdb-line); border-radius: 7px; padding: 4px 8px; font-size: 12px; width: 100%;
+}
+.qdb-rt .rt-thead .rt-th-filter input:focus, .qdb-rt .rt-td-filter input:focus {
+  border-color:#c9a9d8; box-shadow:0 0 0 2px rgba(91,31,110,.12); outline:none;
+}
+/* header cells: crisper */
+.qdb-rt .rt-th { padding: 11px 12px; }
+.qdb-rt .rt-thead { box-shadow: inset 0 -1px 0 var(--qdb-line); }
+/* expander chevron in QDB colour */
+.qdb-rt .rt-expander::after { border-top-color: var(--qdb-plum) !important; }
+/* pagination controls */
+.qdb-rt .rt-pagination { border-top: 1px solid var(--qdb-line); font-size: 12.5px; color: var(--qdb-ink-600); padding-top: 10px; }
+.qdb-rt .rt-page-button { border-radius: 8px; }
+.qdb-rt .rt-page-button:not(:disabled):hover { background: var(--qdb-plum-050); color: var(--qdb-plum); }
+.qdb-rt .rt-page-button.rt-page-button-current, .qdb-rt .rt-current-page { color: var(--qdb-plum); font-weight: 700; }
+
+/* The card wrapping a table: let the search sit in a clean toolbar row */
+.qdb-table-card { padding: 14px 16px 8px; }
+
+/* run detail header: make it a proper title block, not floating text */
+.qdb-run-title { display:flex; align-items:center; gap:12px; margin: 26px 0 4px; }
+.qdb-run-title h4 { margin:0; font-size:20px; font-weight:750; }
+.qdb-run-title .path { font-size:12px; color:var(--qdb-ink-400); font-family: ui-monospace, monospace; }
+
+/* cards: a touch more air, section title styling */
+.card-body { padding: 20px; }
+.bslib-card { margin-bottom: 18px; }
+
+/* buttons in card headers align right nicely */
+.card-header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+
+/* remove the default heavy navbar underline active state, use a pill */
+.navbar-nav .nav-link.active, .navbar-nav .show > .nav-link {
+  background: rgba(255,255,255,.14); border-radius: 9px;
+}
+.navbar-nav .nav-link { border-radius: 9px; }
+.navbar-nav .nav-link:hover { background: rgba(255,255,255,.10); }
+
+/* =============================================================================
+   Density pass (H81) — compact everything so more fits without scrolling
+   ========================================================================== */
+/* Page: tighter top, tighter bottom */
+.qdb-page { padding: 14px 22px 32px !important; }
+
+/* Header: smaller, less margin */
+.qdb-hd { margin: 0 0 12px !important; padding-bottom: 10px !important; }
+.qdb-hd h3 { font-size: 20px !important; font-weight: 700 !important; }
+.qdb-hd .sub { font-size: 12px !important; margin-top: 2px !important; }
+
+/* KPI tiles: much smaller boxes, inline feel */
+.qdb-stats { gap: 10px !important; margin-bottom: 12px !important;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)) !important; }
+.qdb-stat { padding: 9px 12px !important; border-radius: 10px !important; }
+.qdb-stat::before { height: 2px !important; }
+.qdb-stat:hover { transform: none !important; box-shadow: var(--qdb-shadow) !important; }
+.qdb-stat .v { font-size: 19px !important; font-weight: 750 !important; }
+.qdb-stat .k { font-size: 10px !important; margin-top: 1px !important; letter-spacing: .03em !important; }
+
+/* Cards: tighter padding and margins */
+.card-body { padding: 12px 14px !important; }
+.card-header, .bslib-card > .card-header { padding: 9px 14px !important; font-size: 13.5px !important; }
+.bslib-card, .card { margin-bottom: 10px !important; }
+.qdb-card { padding: 10px 12px !important; margin-bottom: 10px !important; border-radius: 10px !important; }
+
+/* Table: denser rows, smaller type */
+.qdb-rt .rt-table { font-size: 12.5px; }
+.qdb-rt .rt-td { padding: 6px 10px !important; }
+.qdb-rt .rt-th { padding: 7px 10px !important; font-size: 10.5px !important; }
+.qdb-rt .rt-search { padding: 5px 10px 5px 28px !important; font-size: 12px !important;
+  min-width: 200px !important; background-position: 9px center !important; margin-bottom: 6px !important; }
+.qdb-rt .rt-pagination { padding-top: 6px !important; font-size: 11.5px !important; }
+.reactable { border-radius: 10px; }
+
+/* Run detail title: tighter */
+.qdb-run-title { margin: 14px 0 8px !important; gap: 10px !important; }
+.qdb-run-title h4 { font-size: 16px !important; }
+.qdb-run-title .path { font-size: 11px !important; }
+
+/* Tabs: compact */
+.nav-tabs .nav-link { padding: 7px 12px !important; font-size: 13px !important; }
+
+/* Forms: compact */
+.form-control, .form-select, .selectize-input { padding: .35rem .6rem !important; font-size: 13px !important; }
+label, .control-label { font-size: 12px !important; margin-bottom: 2px !important; }
+.shiny-input-container { margin-bottom: 8px !important; }
+.form-group { margin-bottom: 8px !important; }
+
+/* Buttons: compact */
+.btn { padding: .35rem .75rem !important; font-size: 13px !important; }
+.btn-sm { padding: .22rem .55rem !important; font-size: 12px !important; }
+
+/* Alerts: compact */
+.alert { padding: 8px 12px !important; font-size: 13px !important; margin-bottom: 10px !important; }
+
+/* Pills: slightly smaller */
+.pill, .qdb-pill { padding: 2px 8px !important; font-size: 10.5px !important; }
+
+/* Definition lists (manifest): tighter rows */
+dl.row dt, dl.row dd { padding-top: 3px !important; font-size: 12.5px !important; }
+
+/* Headings inside panels */
+h4 { font-size: 16px; } h5 { font-size: 14px; } h6 { font-size: 13px; }
+p { margin-bottom: 8px; }
+hr { margin: 10px 0 !important; }
+
+/* Empty state: less vertical space */
+.qdb-empty { padding: 20px 10px !important; font-size: 13px; }
+.qdb-empty .ico { font-size: 20px !important; margin-bottom: 4px !important; }
+
+/* =============================================================================
+   Busy indicator (H102)
+   Scoped to the page body rather than the window, and delayed, so a fast
+   reactive pass does not flash a bar. Only work that actually takes time shows.
+   ========================================================================== */
+.qdb-loading { position: relative; min-height: 40px; }
+.qdb-loading::before {
+  content: ""; position: absolute; inset: 0; z-index: 5;
+  background: rgba(255,255,255,.55); border-radius: var(--qdb-radius);
+  opacity: 0; pointer-events: none; transition: opacity .12s ease;
+}
+.qdb-loading::after {
+  content: "Working\2026"; position: absolute; top: 10px; left: 50%;
+  transform: translateX(-50%); z-index: 6;
+  background: var(--qdb-plum); color: #fff; font-size: 11.5px; font-weight: 600;
+  padding: 4px 12px; border-radius: 999px; box-shadow: var(--qdb-shadow);
+  opacity: 0; pointer-events: none; transition: opacity .12s ease;
+}
+/* Shiny marks recalculating outputs; only then, and only after a beat, show it */
+html.shiny-busy .qdb-loading:has(.recalculating)::before,
+html.shiny-busy .qdb-loading:has(.recalculating)::after {
+  opacity: 1; transition-delay: .45s;
+}
+/* fallback for browsers without :has() - dim the output itself */
+.recalculating { opacity: .4; transition: opacity .15s ease .45s; }
+
+/* ---- collapsible help ---------------------------------------------------- */
+.qdb-help { margin: 6px 0 12px; border: 1px solid var(--qdb-line);
+  border-radius: 10px; background: #fbfafc; }
+.qdb-help > summary {
+  cursor: pointer; padding: 7px 12px; font-size: 12.5px; font-weight: 600;
+  color: var(--qdb-plum); list-style: none; display: flex; align-items: center; gap: 7px;
+}
+.qdb-help > summary::-webkit-details-marker { display: none; }
+.qdb-help > summary:hover { background: var(--qdb-plum-050); border-radius: 10px; }
+.qdb-help[open] > summary { border-bottom: 1px solid var(--qdb-line); border-radius: 10px 10px 0 0; }
+.qdb-help dl { margin: 0; padding: 10px 14px 12px; display: grid;
+  grid-template-columns: minmax(130px, 210px) 1fr; gap: 5px 16px; }
+.qdb-help dt { font-size: 12px; font-weight: 700; color: var(--qdb-ink); }
+.qdb-help dd { margin: 0; font-size: 12.5px; color: var(--qdb-ink-600); line-height: 1.5; }
+.qdb-help dd code, .qdb-help dt code { font-size: 11.5px; }
+.qdb-help-note { margin: 0; padding: 0 14px 12px; font-size: 12px;
+  color: var(--qdb-ink-400); font-style: italic; }
+@media (max-width: 900px) { .qdb-help dl { grid-template-columns: 1fr; gap: 2px 0; } }
