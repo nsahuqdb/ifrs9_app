@@ -1,0 +1,21 @@
+# renv: the lockfile is tracked, the installed library is not
+renv/library/
+renv/staging/
+renv/python/
+renv/sandbox/
+
+# Run artefacts and bank data - never committed
+runs/
+input/
+output/
+*.csv.gz
+
+# R session files
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# Deployment
+app/rsconnect/
