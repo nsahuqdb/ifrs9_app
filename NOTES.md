@@ -3,6 +3,35 @@
 Notes on deferred methodology questions, known divergences from V4,
 and design decisions worth revisiting.
 
+## Dates, unreadable values and the allocation unit  (2026-09)
+
+Decisions taken with the engine (see its NEWS.md and PRICING_READINESS.md):
+
+  Reporting date        the AccountMaster EXTRACTDA most ROWS carry (a tie goes
+                        to the earliest); one stray row no longer redates the
+                        run. Every row of every file must carry it
+                        (INPUT_extract_date_matches_run_cfg names the rows), and
+                        the maturity extension anchors on it too.
+  Dates                 each format is read only from values of its shape, and
+                        a date outside 1900-2200 is blank, so the checks report
+                        it. INPUT_values_typed (new) names every value the
+                        schema could not read as a date or number; the OPENDATE
+                        parse checks now fire (they could not before).
+  Allocation unit       config.yml run.allocation_percentage_unit: percent
+                        (default), fraction or auto. The old guess read a file
+                        of percentages all at most 1% as fractions.
+                        INPUT_ACA_allocation_unit_consistent (ERROR) refuses a
+                        file that contradicts the setting.
+  Config versions       the pre-run check reads a version's suppressions (it
+                        looked in config/config/) and the project's input, drop
+                        and runs folders, as the run does.
+  Cancel at the pause   removes the partial run folder and logs run_cancelled,
+                        as the Python app does.
+  Assistant             reads Output/ (it looked for output/, which does not
+                        exist on Linux) and the overlaid report when a run
+                        carries one, as the analytics pages do.
+  logs/                 no longer tracked: the audit log is runtime data.
+
 ## Pricing readiness before the run  (2026-09)
 
 The pre-run check could pass while the run then priced some contracts to no

@@ -36,12 +36,32 @@
   m$path[1]
 }
 
-#' Directory holding a run's output CSVs.
+#' Directory holding a run's output CSVs: Output/ as the engine writes it
+#' (output/ in older runs); the run folder itself when it holds the CSVs.
 .tool_output_dir <- function(run_path) {
   if (is.null(run_path)) return(NULL)
-  d <- file.path(run_path, "output")
-  if (dir.exists(d)) return(d)
+  for (nm in c("Output", "output")) {
+    d <- file.path(run_path, nm)
+    if (dir.exists(d)) return(d)
+  }
   run_path
+}
+
+#' The ECL report the pages read: the OVERLAID one when an overlay has been
+#' applied to the run (the first, by name), so the assistant quotes the same
+#' provision as the analytics pages. Mirrored in the Python app
+#' (backend/assistant/tools.py, _report_file).
+.tool_report_file <- function(od) {
+  ov <- sort(list.files(od, pattern = "^FinalEclReport_overlay_.*\\.csv$"))
+  if (length(ov) > 0) ov[1] else "FinalEclReport.csv"
+}
+
+#' " (overlay applied - read <file>, as the pages do)" for a table read from
+#' an overlaid report, else "".
+.tool_note <- function(d) {
+  f <- attr(d, "read_from")
+  if (is.null(f) || identical(f, "FinalEclReport.csv")) return("")
+  sprintf(" (overlay applied - read %s, as the pages do)", f)
 }
 
 #' Read an output CSV for a run as character columns (so blank/typed cells
@@ -54,6 +74,7 @@
   od <- .tool_output_dir(rp)
   # allow the model to pass "AccountMaster_1" or "AccountMaster_1.csv"
   if (!grepl("\\.csv$", file)) file <- paste0(file, ".csv")
+  if (tolower(file) == "finaleclreport.csv") file <- .tool_report_file(od)
   fp <- file.path(od, file)
   if (!file.exists(fp)) return(NULL)
   key <- paste0(normalizePath(fp), "::", file.info(fp)$mtime)
@@ -62,6 +83,7 @@
     utils::read.csv(fp, stringsAsFactors = FALSE, colClasses = "character",
                     check.names = FALSE, na.strings = c("NA")),
     error = function(e) NULL)
+  if (!is.null(d)) attr(d, "read_from") <- file
   .tool_cache[[key]] <- d
   d
 }
@@ -123,8 +145,8 @@
   desc <- sprintf("- %s: %d/%d populated%s", cols, pop, n,
                   ifelse(pop == 0, " (blank)", ""))
   list(ok = TRUE,
-       summary = sprintf("File %s: %d rows, %d columns.\n%s",
-                         args$file, n, length(cols),
+       summary = sprintf("File %s%s: %d rows, %d columns.\n%s",
+                         args$file, .tool_note(d), n, length(cols),
                          paste(desc, collapse = "\n")))
 }
 
@@ -181,8 +203,9 @@
                    collapse = "\n")
   label <- if (fn == "count") "count" else sprintf("%s(%s)", fn, args$measure)
   list(ok = TRUE,
-       summary = sprintf("Aggregation of %s by [%s], %s:\n%s",
-                         args$file, paste(gb, collapse = ", "), label, tbl_txt),
+       summary = sprintf("Aggregation of %s%s by [%s], %s:\n%s",
+                         args$file, .tool_note(d), paste(gb, collapse = ", "),
+                         label, tbl_txt),
        table = res,
        chart_data = list(type = "bar",
                          title = sprintf("%s by %s", label, paste(gb, collapse = ", ")),
@@ -335,10 +358,10 @@
                                     summary = sprintf("Column %s is all blank.", col)))
     qs <- stats::quantile(v, c(0, .25, .5, .75, 1), na.rm = TRUE)
     list(ok = TRUE,
-         summary = sprintf(paste0("Numeric stats for %s.%s:\n",
+         summary = sprintf(paste0("Numeric stats for %s.%s%s:\n",
                                   "n=%d, sum=%s, mean=%s, sd=%s\n",
                                   "min=%s, p25=%s, median=%s, p75=%s, max=%s"),
-                           args$file, col, length(v),
+                           args$file, col, .tool_note(d), length(v),
                            formatC(sum(v), format = "fg", big.mark = ","),
                            formatC(mean(v), format = "fg", big.mark = ","),
                            formatC(stats::sd(v), format = "fg", big.mark = ","),
@@ -353,7 +376,8 @@
     tb <- sort(table(val), decreasing = TRUE)
     tb <- utils::head(tb, topn)
     list(ok = TRUE,
-         summary = sprintf("Top %d values for %s.%s:\n%s", topn, args$file, col,
+         summary = sprintf("Top %d values for %s.%s%s:\n%s", topn, args$file, col,
+                           .tool_note(d),
                            paste(sprintf("- %s: %d", names(tb), as.integer(tb)),
                                  collapse = "\n")),
          table = data.frame(value = names(tb), count = as.integer(tb)),
@@ -392,8 +416,9 @@
   hdr <- paste(colnames(sub), collapse = "\t")
   body <- apply(sub, 1, function(r) paste(r, collapse = "\t"))
   list(ok = TRUE,
-       summary = sprintf("Matched %d rows (showing %d):\n%s\n%s",
-                         n_match, nrow(sub), hdr, paste(body, collapse = "\n")),
+       summary = sprintf("Matched %d rows (showing %d)%s:\n%s\n%s",
+                         n_match, nrow(sub), .tool_note(d), hdr,
+                         paste(body, collapse = "\n")),
        table = sub)
 }
 

@@ -1275,6 +1275,19 @@ mod_run_trigger_server <- function(id) {
     })
 
     observeEvent(input$do_cancel, {
+      # The paused run's folder holds no outputs: remove it, so a cancelled
+      # run does not appear under Browse runs, and log run_cancelled.
+      st <- phase1_state()
+      if (!is.null(st) && exists("cancel_paused_run", mode = "function")) {
+        tryCatch(cancel_paused_run(st), error = function(e)
+          showNotification(sprintf("Could not remove the cancelled run: %s",
+                                   conditionMessage(e)), type = "warning"))
+        showNotification(sprintf("Run %s cancelled.", st$run_id %||% ""),
+                         type = "message")
+        if (!is.null(session$userData$runs_changed)) {
+          session$userData$runs_changed(session$userData$runs_changed() + 1)
+        }
+      }
       phase_state("idle")
       phase1_state(NULL)
       phase2_result(NULL)
