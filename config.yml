@@ -84,16 +84,6 @@ run:
   # Set a YYYY-MM-DD value only to force a fallback when inputs carry no date.
   extract_date: ""
 
-  # Unit of ALLOCATIONPERCENTAGE in AccountCollateralAllocation. One of:
-  #   "percent"  - 57.25 means 57.25% (the extract's convention; the default)
-  #   "fraction" - 0.5725 means 57.25%
-  #   "auto"     - the old guess: percent when any value is above 1, else
-  #                fraction. A file whose percentages are all at most 1% is
-  #                then read as fractions, 100 times too large.
-  # The pre-run check (INPUT_ACA_allocation_unit_consistent) fails when the
-  # file's values contradict this setting.
-  allocation_percentage_unit: "percent"
-
   # Whether to overwrite existing output files in output_dir
   overwrite: true
 

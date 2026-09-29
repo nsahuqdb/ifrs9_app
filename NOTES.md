@@ -17,11 +17,10 @@ Decisions taken with the engine (see its NEWS.md and PRICING_READINESS.md):
                         it. INPUT_values_typed (new) names every value the
                         schema could not read as a date or number; the OPENDATE
                         parse checks now fire (they could not before).
-  Allocation unit       config.yml run.allocation_percentage_unit: percent
-                        (default), fraction or auto. The old guess read a file
-                        of percentages all at most 1% as fractions.
-                        INPUT_ACA_allocation_unit_consistent (ERROR) refuses a
-                        file that contradicts the setting.
+  Allocation share      always a percentage (0-100), as the extract delivers
+                        it, divided by 100 for LIC. The old guess (divide only
+                        when some value exceeded 1) would read a file of
+                        shares all at most 1% as fractions.
   Config versions       the pre-run check reads a version's suppressions (it
                         looked in config/config/) and the project's input, drop
                         and runs folders, as the run does.
