@@ -56,7 +56,15 @@ mod_audit_log_ui <- function(id) {
     snapshot_clone        = "Version cloned",
     snapshot_edit         = "Config edited",
     snapshot_promote      = "Status changed",
-    suppression_add       = "Suppression added"
+    suppression_add       = "Suppression added",
+    pre_run_readiness     = "Pricing readiness",
+    run_approved          = "Run approved",
+    run_rejected          = "Run rejected",
+    run_cancelled         = "Run cancelled",
+    overlay_saved         = "Overlay saved",
+    overlay_status        = "Overlay status changed",
+    overlay_applied       = "Overlay applied",
+    overlay_removed       = "Overlay removed"
   )
   out <- unname(lbl[ev])
   ifelse(is.na(out), ev, out)
@@ -163,6 +171,24 @@ mod_audit_log_ui <- function(id) {
       "Check '%s' suppressed until %s",
       s("validator_id"), or_(s("valid_until"), "?")
     ),
+    "pre_run_readiness" = sprintf(
+      "Pricing readiness: %s contracts, %s with no ECL, %s blank in LIC, %s priced with a gap",
+      or_(s("contracts"), "?"), or_(s("no_ecl"), "0"),
+      or_(s("blank_in_lic"), "0"), or_(s("with_gaps"), "0")
+    ),
+    "run_approved" = sprintf("Run approved%s",
+      if (nzchar(s("reason"))) sprintf(" \u2014 %s", s("reason")) else ""),
+    "run_rejected" = sprintf("Run rejected%s",
+      if (nzchar(s("reason"))) sprintf(" \u2014 %s", s("reason")) else ""),
+    "run_cancelled" = "Run cancelled at the review pause; its partial folder was removed",
+    "overlay_saved" = sprintf("Overlay '%s' saved (%s rule(s))",
+      s("overlay_id"), or_(s("n_rules"), "?")),
+    "overlay_status" = sprintf("Overlay '%s' moved to %s",
+      s("overlay_id"), or_(s("to_status"), s("status"))),
+    "overlay_applied" = sprintf("Overlay '%s' applied to %s",
+      s("overlay_id"), or_(s("run_id"), "a run")),
+    "overlay_removed" = sprintf("Overlay '%s' removed from %s",
+      s("overlay_id"), or_(s("run_id"), "a run")),
     # Unknown event type \u2014 show only fields that HAVE a value.
     {
       std <- c("ts", "event", "user", "run_id")

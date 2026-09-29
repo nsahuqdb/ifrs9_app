@@ -46,6 +46,9 @@ mod_run_trigger_server <- function(id) {
     phase2_result <- reactiveVal(NULL)
     calc_env_rv <- reactiveVal(NULL)   # archived calculator env for this run (or NULL = live code)
     pre_run_results <- reactiveVal(NULL)
+    # Pricing readiness from the pre-run check: pre_run_readiness()'s result,
+    # or list(error = ...) when it could not run. Cleared with the check.
+    readiness_res <- reactiveVal(NULL)
     refresh_snapshots <- reactiveVal(0)
 
     # Pre-run check is computed against a specific (run_type, snapshot)
@@ -103,7 +106,7 @@ mod_run_trigger_server <- function(id) {
 
     observeEvent(input$run_type, {
       if (!is.null(pre_run_results())) {
-        pre_run_results(NULL)
+        pre_run_results(NULL); readiness_res(NULL)
         showNotification(
           "Run type changed — pre-run check cleared. Please run pre-run check again.",
           type = "warning", duration = 6)
@@ -192,7 +195,7 @@ mod_run_trigger_server <- function(id) {
 
     observeEvent(input$snapshot_pick, {
       if (!is.null(pre_run_results())) {
-        pre_run_results(NULL)
+        pre_run_results(NULL); readiness_res(NULL)
         showNotification(
           "Version selection changed — pre-run check cleared. Please run pre-run check again.",
           type = "warning", duration = 6)
@@ -726,6 +729,103 @@ mod_run_trigger_server <- function(id) {
         setProgress(1)
       })
       pre_run_results(res)
+      # Pricing readiness: build the LIC files into a temporary folder and stop
+      # before pricing, so the contracts that would get no ECL, or come out
+      # blank in LIC, are known before the run starts -- a collateral id
+      # missing from the allocation file, a rating with no PD curve, a
+      # contract with no EIR. Nothing is written to runs/.
+      readiness_res(NULL)
+      if (!is.null(res)) {
+        rd <- tryCatch(
+          withProgress(message = "Pricing readiness: building the LIC files",
+                       value = 0.3, {
+            out <- if (pick == "__LIVE__") {
+              pre_run_readiness(config_path = cfg_path, input_dir_override = ovr)
+            } else {
+              pre_run_readiness(snapshot = pick, input_dir_override = ovr)
+            }
+            setProgress(1)
+            out
+          }),
+          error = function(e) list(error = conditionMessage(e)))
+        readiness_res(rd)
+      }
+    })
+
+    # Unsuppressed READY_* errors from the readiness check: they gate Start
+    # exactly as the pre-run ERRORs do.
+    .ready_errors <- function(rd) {
+      v <- rd$validation
+      if (is.null(v) || nrow(v) == 0 || !"stage" %in% names(v)) return(v[0, ])
+      eff <- if ("effective_severity" %in% names(v)) v$effective_severity else v$severity
+      v[v$stage == "READY" & !as.logical(v$passed) & eff == "ERROR", , drop = FALSE]
+    }
+
+    output$readiness_status <- renderUI({
+      rd <- readiness_res()
+      if (is.null(rd)) return(NULL)
+      if (!is.null(rd$error)) {
+        return(div(class = "alert alert-danger", style = "margin-top: 0.8em;",
+                   tags$strong("The readiness check failed: "), rd$error))
+      }
+      tab <- rd$readiness$table
+      s <- readiness_table_summary(tab)
+      if (is.null(tab) || (s$contracts %||% 0) == 0) {
+        return(div(class = "alert alert-warning", style = "margin-top: 0.8em;",
+                   "Readiness could not be assessed."))
+      }
+      fmt <- function(x) formatC(x %||% 0, format = "d", big.mark = ",")
+      n_no <- s[["No ECL"]]$contracts %||% 0
+      n_bl <- s[["Blank in LIC"]]$contracts %||% 0
+      n_ck <- s[["Priced - check"]]$contracts %||% 0
+      verdict <- if (n_no + n_bl > 0) {
+        div(class = "alert alert-danger",
+            sprintf("%s contract(s) would get NO ECL and %s would come out BLANK in LIC. See the reasons below.",
+                    fmt(n_no), fmt(n_bl)))
+      } else {
+        div(class = "alert alert-success", "Every contract will be priced.")
+      }
+      errs <- .ready_errors(rd)
+      tagList(
+        tags$hr(),
+        h5(tags$strong("Pricing readiness"), " — will every contract get an ECL?"),
+        tags$table(class = "table table-sm", style = "width: auto;",
+          tags$tr(tags$th("Contracts"), tags$th("No ECL"), tags$th("Blank in LIC"),
+                  tags$th("Priced — check")),
+          tags$tr(tags$td(fmt(s$contracts)), tags$td(fmt(n_no)), tags$td(fmt(n_bl)),
+                  tags$td(fmt(n_ck)))),
+        verdict,
+        if (nrow(errs) > 0)
+          p(tags$span(class = "pill pill-error",
+                      sprintf("%d READY ERROR — Run blocked", nrow(errs))),
+            " Fix at source, or accept a finding with a reason on ",
+            tags$strong("Validation suppressions"), "."),
+        tags$details(
+          tags$summary("Reasons, fixes and the row funnel"),
+          DT::DTOutput(ns("readiness_reasons")),
+          tags$br(),
+          DT::DTOutput(ns("readiness_funnel")))
+      )
+    })
+
+    output$readiness_reasons <- DT::renderDT({
+      rd <- readiness_res()
+      if (is.null(rd) || !is.null(rd$error)) return(NULL)
+      r <- readiness_reasons(rd$readiness$table)
+      if (nrow(r) == 0) return(NULL)
+      r$exposure <- formatC(r$exposure, format = "f", digits = 0, big.mark = ",")
+      DT::datatable(r[, c("severity", "check", "contracts", "exposure", "text", "fix")],
+                    rownames = FALSE, class = "narrow-table compact",
+                    options = list(pageLength = 20, dom = "t", scrollX = TRUE))
+    })
+
+    output$readiness_funnel <- DT::renderDT({
+      rd <- readiness_res()
+      if (is.null(rd) || !is.null(rd$error)) return(NULL)
+      f <- rd$readiness$funnel
+      if (is.null(f) || nrow(f) == 0) return(NULL)
+      DT::datatable(f, rownames = FALSE, class = "narrow-table compact",
+                    options = list(pageLength = 20, dom = "t", scrollX = TRUE))
     })
 
     output$pre_run_status <- renderUI({
@@ -828,8 +928,10 @@ mod_run_trigger_server <- function(id) {
       pre_run_ok <- !is.null(r) && nrow(r) > 0 &&
                   sum(!r$passed & r$severity == "ERROR" &
                        !(r$suppressed %||% FALSE)) == 0
+      rd <- readiness_res()
+      ready_ok <- !is.null(rd) && is.null(rd$error) && nrow(.ready_errors(rd)) == 0
       type_v <- .run_type_validity()
-      can_run <- pre_run_ok && isTRUE(type_v$ok)
+      can_run <- pre_run_ok && ready_ok && isTRUE(type_v$ok)
 
       label <- if ((input$run_type %||% "unofficial") == "official") {
         "Start OFFICIAL run"
@@ -1225,7 +1327,7 @@ mod_run_trigger_server <- function(id) {
       phase_state("idle")
       phase1_state(NULL)
       phase2_result(NULL)
-      pre_run_results(NULL)
+      pre_run_results(NULL); readiness_res(NULL)
     })
   })
 }
@@ -1331,7 +1433,8 @@ mod_run_trigger_server <- function(id) {
       column(6,
         card(
           card_header("3. Pre-run findings"),
-          uiOutput(ns("pre_run_status"))
+          uiOutput(ns("pre_run_status")),
+          uiOutput(ns("readiness_status"))
         )
       )
     )

@@ -8,6 +8,8 @@ renv/sandbox/
 runs/
 input/
 output/
+uploads/
+drops/
 *.csv.gz
 
 # R session files

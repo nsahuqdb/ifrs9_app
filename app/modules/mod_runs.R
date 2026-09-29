@@ -325,7 +325,7 @@ mod_runs_server <- function(id, on_select_run = NULL) {
     output$detail_block <- renderUI({
       sr <- selected_run()
       if (is.null(sr))
-        return(qdb_empty("Select a run above to see its manifest, validation, reconciliation, overrides and outputs.", "hand-pointer"))
+        return(qdb_empty("Select a run above to see its manifest, validation, pricing readiness, reconciliation, overrides and outputs.", "hand-pointer"))
       outputs_bump()
       status <- .selected_run_status()
       paths <- tryCatch(list_run_outputs(sr$path), error = function(e) character(0))
@@ -358,6 +358,7 @@ mod_runs_server <- function(id, on_select_run = NULL) {
         navset_card_tab(
           nav_panel("Manifest", .manifest_body(sr)),
           nav_panel("Validation", .validation_body(sr)),
+          nav_panel("Readiness", .readiness_body(sr)),
           nav_panel("Overrides", .overrides_body(sr)),
           nav_panel("Reconciliation", .reconciliation_body(sr)),
           nav_panel("Outputs",
@@ -535,6 +536,45 @@ mod_runs_server <- function(id, on_select_run = NULL) {
         h5("Reconciliation summary"),
         HTML(markdown::markdownToHTML(r$md_path, fragment.only = TRUE)),
         h5("Mismatches"), mm)
+    }
+
+    # ---- Readiness panel (inline builder) -----------------------------
+    # What the pricing-readiness check found when this run was made: how many
+    # contracts got no ECL, came out blank in LIC, or were priced from
+    # incomplete inputs, why, and where each input file lost rows.
+    .readiness_body <- function(sr) {
+      r <- tryCatch(read_run_readiness(sr$path), error = function(e) NULL)
+      if (is.null(r) || is.null(r$table))
+        return(p(class = "small-muted",
+                  "No readiness report for this run. Runs made before the ",
+                  "pricing-readiness check existed do not carry one."))
+      s <- r$summary
+      fmt <- function(x) formatC(x %||% 0, format = "d", big.mark = ",")
+      n_no <- s[["No ECL"]]$contracts %||% 0
+      n_bl <- s[["Blank in LIC"]]$contracts %||% 0
+      rs <- r$reasons
+      if (nrow(rs) > 0)
+        rs$exposure <- formatC(rs$exposure, format = "f", digits = 0, big.mark = ",")
+      flagged <- r$table[r$table$Outcome != "Priced", , drop = FALSE]
+      tagList(
+        qdb_stats(list(
+          list(k = "Contracts", v = fmt(s$contracts)),
+          list(k = "No ECL", v = fmt(n_no), tone = if (n_no > 0) "err" else ""),
+          list(k = "Blank in LIC", v = fmt(n_bl), tone = if (n_bl > 0) "err" else ""),
+          list(k = "Priced \u2014 check", v = fmt(s[["Priced - check"]]$contracts),
+               tone = "warn"),
+          list(k = "Priced", v = fmt(s[["Priced"]]$contracts), tone = "ok"))),
+        h5("Why"),
+        if (nrow(rs) == 0)
+          p(class = "small-muted", "Every contract is priced from complete inputs.")
+        else .runs_html_table(rs[, c("severity", "check", "contracts", "exposure",
+                                     "text", "fix")], max_rows = 50),
+        h5("Row funnel \u2014 rows in, rows out, per file"),
+        if (is.null(r$funnel)) p(class = "small-muted", "(no funnel)")
+        else .runs_html_table(r$funnel, max_rows = 50),
+        h5(sprintf("Contracts with a gap (%s)", fmt(nrow(flagged)))),
+        if (nrow(flagged) == 0) p(class = "small-muted", "(none)")
+        else .runs_html_table(flagged, max_rows = 200))
     }
 
     # ---- Overrides panel (inline builder) -----------------------------

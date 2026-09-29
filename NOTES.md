@@ -3,6 +3,33 @@
 Notes on deferred methodology questions, known divergences from V4,
 and design decisions worth revisiting.
 
+## Pricing readiness before the run  (2026-09)
+
+The pre-run check could pass while the run then priced some contracts to no
+ECL, or handed LIC a contract it would leave blank -- an allocation pointing at
+a collateral record the Collateral extract does not carry is the case that
+surfaced it. The engine now answers before the run (`pre_run_readiness()`),
+and the app shows it:
+
+  Run pipeline, 3. Pre-run findings   after the pre-run check, the readiness dry
+                                      run: contracts, no ECL, blank in LIC,
+                                      priced from incomplete inputs; the
+                                      verdict; the reasons with their fixes; the
+                                      row funnel. An unsuppressed READY ERROR
+                                      disables Start, like a pre-run ERROR.
+  Browse runs, Readiness tab          what the check found when the run was
+                                      made (reports/readiness.csv).
+  Audit log                           labels for pre_run_readiness, run
+                                      approved/rejected/cancelled and the
+                                      overlay events the Python app writes to
+                                      a shared log.
+
+The dry run builds the LIC files in a temporary folder and stops before
+pricing: about as long as phase 1 plus the curves (30-60 seconds on the June
+2026 book), and nothing is written to runs/. What each finding means, and the
+field-by-field map of what a gap does to the number, is in the engine's
+PRICING_READINESS.md.
+
 ## MEV: scenario weights are now a choice  (2026-08, H120)
 
 Editing the macro path was silently moving the scenario weights as well. That is
