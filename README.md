@@ -25,6 +25,18 @@ inside the package are a reference only.
 
 ## Install
 
+From the git repositories: clone `ifrs9qdb` (the engine) and this repository
+side by side, start R in this folder (renv activates itself), then
+
+```r
+renv::restore(exclude = "ifrs9qdb")   # the pinned CRAN packages, first time only
+renv::install("../ifrs9qdb")          # the engine, from its clone
+```
+
+Re-run the `renv::install()` line after pulling a new engine version.
+
+From a built package instead:
+
 ```r
 install.packages("ifrs9qdb_1.0.1.tar.gz", repos = NULL, type = "source")
 
