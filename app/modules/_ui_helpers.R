@@ -127,3 +127,30 @@ qdb_help <- function(items, label = "What do these mean?", note = NULL) {
     if (!is.null(note)) htmltools::tags$p(class = "qdb-help-note",
                                           htmltools::HTML(note)) else NULL)
 }
+
+
+# Every finding accepted in a run, and why -- for the run pages and the
+# approval review: accepted for the run on the pipeline page, or by a standing
+# suppression that took effect, with the reason, who and when
+# (read_run_accepted_findings(); rebuilt for a run made before runs kept
+# reports/accepted_findings.csv). NULL when nothing was accepted.
+accepted_findings_ui <- function(run_path, title = "Accepted findings") {
+  acc <- tryCatch(read_run_accepted_findings(run_path), error = function(e) NULL)
+  if (is.null(acc) || nrow(acc) == 0) return(NULL)
+  rebuilt <- any(acc$recorded == "FALSE")
+  div(class = "alert alert-info", style = "padding:0.6em 0.9em; margin:0.6em 0;",
+    tags$strong(sprintf("%s: %d", title, nrow(acc))),
+    tags$span(class = "small-muted",
+      " — accepted for this run, or by a standing suppression that took effect",
+      if (rebuilt) " (rebuilt from the run's validation report and frozen suppressions file)"),
+    tags$table(class = "table table-sm", style = "margin:0.4em 0 0; background:transparent;",
+      tags$tr(tags$th("Check"), tags$th("Severity"), tags$th("Accepted"),
+              tags$th("Reason"), tags$th("By"), tags$th("When"), tags$th("Until")),
+      lapply(seq_len(nrow(acc)), function(i) tags$tr(
+        tags$td(tags$code(acc$validator_id[i])), tags$td(acc$severity[i]),
+        tags$td(if (identical(acc$source[i], "run")) "for this run"
+                else if (identical(acc$source[i], "standing")) "standing suppression"
+                else "—"),
+        tags$td(acc$reason[i]), tags$td(acc$accepted_by[i]),
+        tags$td(substr(acc$accepted_at[i], 1, 16)), tags$td(acc$valid_until[i])))))
+}

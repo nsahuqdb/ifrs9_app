@@ -256,6 +256,7 @@ mod_approval_queue_server <- function(id) {
       n_fail <- sum(!as.logical(v$passed))
       tagList(
         p(sprintf("%d/%d passed (%d failures)", n_pass, nrow(v), n_fail)),
+        accepted_findings_ui(sr$path, "Accepted findings (approving the run accepts them)"),
         DT::DTOutput(ns("val_table"))
       )
     })
@@ -491,6 +492,7 @@ mod_approval_queue_server <- function(id) {
       n_fail <- sum(!as.logical(v$passed))
       tagList(
         p(sprintf("%d/%d passed (%d failures)", n_pass, nrow(v), n_fail)),
+        accepted_findings_ui(sr$path),
         DT::DTOutput(ns("hist_val_table"))
       )
     })

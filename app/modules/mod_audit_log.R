@@ -57,6 +57,8 @@ mod_audit_log_ui <- function(id) {
     snapshot_edit         = "Config edited",
     snapshot_promote      = "Status changed",
     suppression_add       = "Suppression added",
+    suppression_remove    = "Suppression removed",
+    finding_accepted      = "Finding accepted",
     pre_run_readiness     = "Pricing readiness",
     run_approved          = "Run approved",
     run_rejected          = "Run rejected",
@@ -171,6 +173,22 @@ mod_audit_log_ui <- function(id) {
       "Check '%s' suppressed until %s",
       s("validator_id"), or_(s("valid_until"), "?")
     ),
+    "suppression_remove" = sprintf(
+      "Suppression of '%s' removed by %s: %s",
+      s("validator_id"), or_(s("removed_by"), "?"), or_(s("reason"), "?")
+    ),
+    "finding_accepted" = {
+      sev <- if (nzchar(s("severity"))) sprintf(" [%s]", s("severity")) else ""
+      if (identical(s("source"), "standing")) {
+        sprintf("Check '%s'%s accepted by a standing suppression approved by %s: %s",
+                s("validator_id"), sev, or_(s("accepted_by"), "?"),
+                or_(s("reason"), "?"))
+      } else {
+        sprintf("Check '%s'%s accepted for this run by %s: %s",
+                s("validator_id"), sev, or_(s("accepted_by"), "?"),
+                or_(s("reason"), "?"))
+      }
+    },
     "pre_run_readiness" = sprintf(
       "Pricing readiness: %s contracts, %s with no ECL, %s blank in LIC, %s priced with a gap",
       or_(s("contracts"), "?"), or_(s("no_ecl"), "0"),

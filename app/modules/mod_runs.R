@@ -490,6 +490,7 @@ mod_runs_server <- function(id, on_select_run = NULL) {
           list(k = "Checks", v = nrow(v), tone = "accent"),
           list(k = "Passed", v = n_pass, tone = "ok"),
           list(k = "Failed", v = n_fail, tone = if (n_fail > 0) "err" else ""))),
+        accepted_findings_ui(sr$path),
         reactable::reactableOutput(ns("validation_rt")))
     }
 

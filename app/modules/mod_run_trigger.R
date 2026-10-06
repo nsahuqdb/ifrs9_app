@@ -49,6 +49,13 @@ mod_run_trigger_server <- function(id) {
     # Pricing readiness from the pre-run check: pre_run_readiness()'s result,
     # or list(error = ...) when it could not run. Cleared with the check.
     readiness_res <- reactiveVal(NULL)
+    # Findings accepted for the run being prepared ("Accept for this run"):
+    # passed to the pre-run check, the readiness dry run and phase 1, recorded
+    # in the run, and dropped once it starts -- never written to
+    # validation_suppressions.yml, so the next run asks again. Also dropped
+    # when the inputs, the version or the run type change.
+    no_accepted <- function() normalise_accepted_findings(NULL)
+    accepted_rv <- reactiveVal(normalise_accepted_findings(NULL))
     refresh_snapshots <- reactiveVal(0)
 
     # Pre-run check is computed against a specific (run_type, snapshot)
@@ -105,6 +112,7 @@ mod_run_trigger_server <- function(id) {
     })
 
     observeEvent(input$run_type, {
+      accepted_rv(no_accepted())
       if (!is.null(pre_run_results())) {
         pre_run_results(NULL); readiness_res(NULL)
         showNotification(
@@ -194,6 +202,7 @@ mod_run_trigger_server <- function(id) {
     })
 
     observeEvent(input$snapshot_pick, {
+      accepted_rv(no_accepted())
       if (!is.null(pre_run_results())) {
         pre_run_results(NULL); readiness_res(NULL)
         showNotification(
@@ -316,6 +325,7 @@ mod_run_trigger_server <- function(id) {
     # When the source kind changes, reset the validation result. The
     # user has to revalidate after switching source.
     observeEvent(input$input_source_kind, {
+      accepted_rv(no_accepted())
       input_validation(NULL)
       input_dir_override(NULL)
       input_source_meta(list(kind = input$input_source_kind, details = list()))
@@ -400,6 +410,7 @@ mod_run_trigger_server <- function(id) {
     # When user clicks "Validate inputs", resolve the directory based on
     # source kind, run the structural check, store the result.
     observeEvent(input$do_validate_inputs, {
+      accepted_rv(no_accepted())
       kind <- input$input_source_kind %||% "configured"
       resolved_dir <- NULL
       meta <- list(kind = kind, details = list())
@@ -705,20 +716,22 @@ mod_run_trigger_server <- function(id) {
                     class = "btn-primary")
     })
 
-    # Pre-run check
-    observeEvent(input$do_pre_run, {
+    # Pre-run check -- with the findings accepted for this run, so they are
+    # suppressed as they will be in the run. Re-run after an acceptance.
+    .run_checks <- function() {
       pick <- input$snapshot_pick
       cfg_path <- file.path(getOption("ifrs9.project_root", getwd()),
                               "config.yml")
       ovr <- input_dir_override()
+      acc <- accepted_rv()
       withProgress(message = "Pre-run check", value = 0.3, {
         res <- tryCatch(
           if (pick == "__LIVE__") {
             pre_run_check(config_path = cfg_path, verbose = FALSE,
-                            input_dir_override = ovr)
+                            input_dir_override = ovr, accepted_findings = acc)
           } else {
             pre_run_check(snapshot = pick, verbose = FALSE,
-                            input_dir_override = ovr)
+                            input_dir_override = ovr, accepted_findings = acc)
           },
           error = function(e) {
             showNotification(paste("Pre-run failed:", conditionMessage(e)),
@@ -740,9 +753,11 @@ mod_run_trigger_server <- function(id) {
           withProgress(message = "Pricing readiness: building the LIC files",
                        value = 0.3, {
             out <- if (pick == "__LIVE__") {
-              pre_run_readiness(config_path = cfg_path, input_dir_override = ovr)
+              pre_run_readiness(config_path = cfg_path, input_dir_override = ovr,
+                                accepted_findings = acc)
             } else {
-              pre_run_readiness(snapshot = pick, input_dir_override = ovr)
+              pre_run_readiness(snapshot = pick, input_dir_override = ovr,
+                                accepted_findings = acc)
             }
             setProgress(1)
             out
@@ -750,6 +765,154 @@ mod_run_trigger_server <- function(id) {
           error = function(e) list(error = conditionMessage(e)))
         readiness_res(rd)
       }
+    }
+    observeEvent(input$do_pre_run, .run_checks())
+
+    # ---- Accept for this run ------------------------------------------
+    # The blocking findings a suppression can silence: unsuppressed ERRORs of
+    # the pre-run check and of the readiness dry run.
+    .acceptable <- reactive({
+      out <- data.frame(id = character(), description = character(),
+                        stringsAsFactors = FALSE)
+      take <- function(v) {
+        if (is.null(v) || nrow(v) == 0) return(NULL)
+        eff <- if ("effective_severity" %in% names(v)) v$effective_severity else v$severity
+        sup <- if ("suppressible" %in% names(v)) as.logical(v$suppressible) else TRUE
+        k <- !as.logical(v$passed) & eff == "ERROR" &
+          !as.logical(v$suppressed %||% FALSE) & sup
+        data.frame(id = v$id[k], description = v$description[k],
+                   stringsAsFactors = FALSE)
+      }
+      r <- pre_run_results()
+      rd <- readiness_res()
+      parts <- list(out, take(r),
+                    if (!is.null(rd) && is.null(rd$error)) take(.ready_errors(rd)))
+      out <- do.call(rbind, Filter(Negate(is.null), parts))
+      out[!duplicated(out$id), , drop = FALSE]
+    })
+
+    # Standing suppressions that took effect in the check: their reasons, from
+    # the suppressions file the check read.
+    .standing_hits <- reactive({
+      r <- pre_run_results()
+      if (is.null(r) || nrow(r) == 0) return(NULL)
+      ids <- r$id[!as.logical(r$passed) & as.logical(r$suppressed %||% FALSE)]
+      rd <- readiness_res()
+      if (!is.null(rd) && is.null(rd$error) && !is.null(rd$validation)) {
+        v <- rd$validation
+        ids <- c(ids, v$id[v$stage == "READY" & !as.logical(v$passed) &
+                             as.logical(v$suppressed %||% FALSE)])
+      }
+      ids <- setdiff(unique(ids), accepted_rv()$validator_id)
+      if (length(ids) == 0) return(NULL)
+      pick <- input$snapshot_pick %||% "__LIVE__"
+      path <- if (pick == "__LIVE__") {
+        file.path(getOption("ifrs9.project_root", getwd()), "config",
+                  "validation_suppressions.yml")
+      } else {
+        file.path(snapshot_paths(pick, snaps_root())$snapshot_dir, "config",
+                  "validation_suppressions.yml")
+      }
+      tbl <- tryCatch(load_suppressions(path), error = function(e) NULL)
+      if (is.null(tbl) || nrow(tbl) == 0) return(NULL)
+      tbl <- tbl[tbl$validator_id %in% intersect(ids, active_suppression_ids(tbl)), ,
+                 drop = FALSE]
+      tbl[!duplicated(tbl$validator_id), , drop = FALSE]
+    })
+
+    output$accepted_panel <- renderUI({
+      if (is.null(pre_run_results())) return(NULL)
+      a <- .acceptable()
+      acc <- accepted_rv()
+      st <- .standing_hits()
+      tagList(
+        if (nrow(a) > 0)
+          div(class = "alert alert-danger", style = "margin-top:0.6em;",
+              tags$strong(sprintf("%d blocking finding(s) can be accepted for this run. ",
+                                  nrow(a))),
+              "For a known source issue the run has to live with: give a reason, ",
+              "and it is recorded on the run and in the audit log. Nothing is kept ",
+              "for later runs — the next run asks again. ",
+              actionButton(ns("do_accept"), "Accept for this run…",
+                           icon = icon("circle-check"),
+                           class = "btn-sm btn-outline-danger",
+                           style = "margin-left:0.4em;")),
+        if (nrow(acc) > 0)
+          div(class = "alert alert-info", style = "margin-top:0.6em;",
+              tags$strong(sprintf("%d finding(s) accepted for this run: ", nrow(acc))),
+              paste(sprintf("%s (%s, by %s)", acc$validator_id, acc$reason,
+                            acc$accepted_by), collapse = "; "),
+              ". Recorded on the run with the reasons; the next run asks again. ",
+              actionButton(ns("do_withdraw"), "Withdraw", icon = icon("rotate-left"),
+                           class = "btn-sm btn-outline-secondary",
+                           style = "margin-left:0.4em;")),
+        if (!is.null(st) && nrow(st) > 0)
+          div(class = "alert alert-secondary", style = "margin-top:0.6em;",
+              tags$strong(sprintf("%d finding(s) accepted by standing suppressions: ",
+                                  nrow(st))),
+              paste(sprintf("%s (approved by %s%s: %s)", st$validator_id,
+                            st$approved_by,
+                            ifelse(nzchar(st$valid_until),
+                                   paste0(", until ", st$valid_until), ""),
+                            st$reason), collapse = "; "),
+              ". A standing suppression applies to every run until it expires or ",
+              "is removed (", tags$strong("Validation suppressions"), " page), ",
+              "so these are not asked about.")
+      )
+    })
+
+    observeEvent(input$do_accept, {
+      a <- .acceptable()
+      if (nrow(a) == 0) return()
+      showModal(modalDialog(
+        title = "Accept for this run",
+        p(class = "small-muted",
+          "Accepted for THIS run only. The finding stays on the run's record, ",
+          "marked suppressed with your reason, your name and the time — in ",
+          "its validation report, its list of accepted findings and the audit ",
+          "log — and no longer blocks this run. Nothing is kept for later ",
+          "runs: the next run asks again."),
+        checkboxGroupInput(ns("accept_ids"), "Findings to accept",
+                           choices = setNames(a$id, sprintf("%s — %s", a$id,
+                                                            a$description)),
+                           selected = a$id),
+        textAreaInput(ns("accept_reason"), "Reason (required)", rows = 3,
+                      placeholder = "e.g. Repayment schedule dates carry two-digit years in the source system; ticket #1234."),
+        textInput(ns("accept_by"), "Accepted by",
+                  value = Sys.getenv("IFRS9_USER", Sys.info()[["user"]] %||% "")),
+        footer = tagList(modalButton("Cancel"),
+                         actionButton(ns("do_accept_confirm"),
+                                      "Accept for this run and re-check",
+                                      class = "btn-primary")),
+        size = "l", easyClose = TRUE))
+    })
+
+    observeEvent(input$do_accept_confirm, {
+      ids <- input$accept_ids
+      reason <- trimws(input$accept_reason %||% "")
+      who <- trimws(input$accept_by %||% "")
+      if (length(ids) == 0) {
+        showNotification("Pick at least one finding.", type = "warning"); return()
+      }
+      if (!nzchar(reason) || !nzchar(who)) {
+        showNotification("A reason and a name are required (audit trail).",
+                         type = "error"); return()
+      }
+      now <- format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z")
+      new <- data.frame(validator_id = ids, reason = reason, accepted_by = who,
+                        accepted_at = now, stringsAsFactors = FALSE)
+      accepted_rv(normalise_accepted_findings(rbind(accepted_rv(), new)))
+      removeModal()
+      .run_checks()
+      showNotification(sprintf("Accepted %d finding(s) for this run; the checks ran again. The next run will ask again.",
+                               length(ids)), type = "message", duration = 8)
+    })
+
+    observeEvent(input$do_withdraw, {
+      accepted_rv(no_accepted())
+      .run_checks()
+      showNotification("Withdrew the acceptances; the checks ran again.",
+                       type = "message", duration = 6)
     })
 
     # Unsuppressed READY_* errors from the readiness check: they gate Start
@@ -982,7 +1145,10 @@ mod_run_trigger_server <- function(id) {
                         input_dir_override = ovr, input_source_meta = src_meta,
                         run_type = run_type_val, run_purpose = run_purpose_val,
                         portfolio_date = portfolio_date_val,
-                        calculator_version = calc_ver_val)
+                        calculator_version = calc_ver_val,
+                        accepted_findings = accepted_rv())
+      # recorded on the run it starts; the next run asks again
+      accepted_rv(no_accepted())
       withProgress(message = "Phase 1: load + validate + transform", value = 0.1, {
         state <- tryCatch(
           if (pick == "__LIVE__") {
@@ -1012,13 +1178,23 @@ mod_run_trigger_server <- function(id) {
     # ============== STEP 2: PAUSE PAGE ==============================
     output$pause_summary <- renderUI({
       st <- phase1_state(); if (is.null(st)) return(NULL)
+      acc <- tryCatch(accepted_findings_record(st$accepted_findings, st$validation,
+                                               st$suppressions_tbl),
+                      error = function(e) NULL)
       tagList(
         h4(sprintf("Run %s — paused for review", st$run_id)),
         p(class = "small-muted",
           sprintf("Customers: %d   |   Investments: %d   |   Validation findings (so far): %d",
                   nrow(st$cm_view %||% data.frame()),
                   nrow(st$inv_view %||% data.frame()),
-                  if (!is.null(st$validation)) sum(!st$validation$passed) else 0))
+                  if (!is.null(st$validation)) sum(!st$validation$passed) else 0)),
+        if (!is.null(acc) && nrow(acc) > 0)
+          div(class = "alert alert-info", style = "padding:0.5em 0.8em;",
+              tags$strong(sprintf("Findings accepted in this run so far: %d. ", nrow(acc))),
+              paste(sprintf("%s (%s by %s: %s)", acc$validator_id,
+                            ifelse(acc$source == "run", "for this run",
+                                   "standing suppression"),
+                            acc$accepted_by, acc$reason), collapse = "; "))
       )
     })
 
@@ -1330,6 +1506,25 @@ mod_run_trigger_server <- function(id) {
         if (!identical(scen, "weighted"))
           div(class = "alert alert-warning", style = "padding:0.5em 0.8em;",
               sprintf("Scenario run (%s) \u2014 stress figure, not the reported provision.", scen)),
+        {
+          acc <- tryCatch(read_run_accepted_findings(r$run_dir),
+                          error = function(e) NULL)
+          if (!is.null(acc) && nrow(acc) > 0)
+            tagList(
+              h5(sprintf("Findings accepted in this run: %d", nrow(acc))),
+              p(class = "small-muted",
+                "On the run's record (reports/accepted_findings.csv, validation.md) ",
+                "and in the audit log, with the reasons."),
+              tags$table(class = "table table-sm",
+                tags$tr(tags$th("Check"), tags$th("Severity"), tags$th("Accepted"),
+                        tags$th("Reason"), tags$th("By"), tags$th("When")),
+                lapply(seq_len(nrow(acc)), function(i) tags$tr(
+                  tags$td(tags$code(acc$validator_id[i])), tags$td(acc$severity[i]),
+                  tags$td(if (acc$source[i] == "run") "for this run"
+                          else "standing suppression"),
+                  tags$td(acc$reason[i]), tags$td(acc$accepted_by[i]),
+                  tags$td(substr(acc$accepted_at[i], 1, 16))))))
+        },
         p(class = "small-muted", next_step),
         actionButton(ns("do_new_run"), "Start another run",
                       icon = icon("rotate"), class = "btn-secondary")
@@ -1447,7 +1642,8 @@ mod_run_trigger_server <- function(id) {
         card(
           card_header("3. Pre-run findings"),
           uiOutput(ns("pre_run_status")),
-          uiOutput(ns("readiness_status"))
+          uiOutput(ns("readiness_status")),
+          uiOutput(ns("accepted_panel"))
         )
       )
     )

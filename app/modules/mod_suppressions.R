@@ -25,7 +25,12 @@ mod_suppressions_ui <- function(id) {
         "still runs and the finding is still recorded; it just stops blocking ",
         "the run. Use this for known data-quality issues that have been ",
         "investigated and accepted by the team. Every suppression requires ",
-        "a reason and approver — the audit log captures both.")
+        "a reason and approver — the audit log captures both."),
+      p(class = "small-muted",
+        "A suppression is STANDING: it accepts its finding in every run until it ",
+        "expires or is removed. To accept a finding for one run only, use ",
+        tags$strong("Accept for this run"), " on the Run pipeline page \u2014 ",
+        "the next run asks again.")
     )),
     fluidRow(
       column(5,
@@ -60,10 +65,23 @@ mod_suppressions_ui <- function(id) {
     ),
     fluidRow(column(12,
       hr(),
-      h4("Active suppressions"),
+      h4("Suppressions, and what became of them"),
       p(class = "small-muted",
-        textOutput(ns("path_label"), inline = TRUE)),
-      DT::DTOutput(ns("active_table"))
+        textOutput(ns("path_label"), inline = TRUE),
+        " \u2014 nothing is ever deleted: a removed suppression stays, with who ",
+        "removed it and why."),
+      DT::DTOutput(ns("active_table")),
+      card(
+        card_header("Remove a suppression"),
+        p(class = "small-muted",
+          "Ends it from today. The finding then blocks again and is asked about ",
+          "on each run. The audit log records the removal."),
+        uiOutput(ns("remove_pick")),
+        textInput(ns("remove_reason"), "Reason (required)",
+                  placeholder = "e.g. findings are now accepted run by run"),
+        actionButton(ns("do_remove"), "Remove", icon = icon("trash"),
+                     class = "btn-outline-danger")
+      )
     ))
   )
 }
@@ -217,10 +235,32 @@ mod_suppressions_server <- function(id) {
       }
     })
 
-    # ---- Active table ----------------------------------------------
+    # ---- History: every entry, active, expired or removed ------------
+    history <- reactive({
+      refresh()
+      raw <- tryCatch(yaml::read_yaml(suppressions_path()), error = function(e) NULL)
+      ent <- raw$suppressions %||% list()
+      if (length(ent) == 0) return(NULL)
+      f <- function(e, k) as.character(e[[k]] %||% "")
+      df <- data.frame(
+        validator_id   = vapply(ent, f, "", k = "validator_id"),
+        reason         = vapply(ent, f, "", k = "reason"),
+        approved_by    = vapply(ent, f, "", k = "approved_by"),
+        approved_at    = vapply(ent, f, "", k = "approved_at"),
+        valid_until    = vapply(ent, f, "", k = "valid_until"),
+        removed_by     = vapply(ent, f, "", k = "removed_by"),
+        removed_at     = vapply(ent, f, "", k = "removed_at"),
+        removal_reason = vapply(ent, f, "", k = "removal_reason"),
+        stringsAsFactors = FALSE)
+      vu <- suppressWarnings(as.Date(df$valid_until))
+      df$status <- ifelse(nzchar(df$removed_by), "removed",
+                          ifelse(is.na(vu) | vu >= Sys.Date(), "active", "expired"))
+      df[, c("status", setdiff(names(df), "status"))]
+    })
+
     output$active_table <- DT::renderDT({
-      s <- suppr()
-      if (nrow(s) == 0) {
+      s <- history()
+      if (is.null(s) || nrow(s) == 0) {
         return(DT::datatable(
           data.frame(message = "No suppressions yet."),
           options = list(dom = "t", ordering = FALSE),
@@ -232,6 +272,39 @@ mod_suppressions_server <- function(id) {
         class = "narrow-table compact",
         options = list(pageLength = 15)
       )
+    })
+
+    # ---- Remove: end from today, keep the entry -----------------------
+    output$remove_pick <- renderUI({
+      ids <- sort(active_suppression_ids(suppr()))
+      if (length(ids) == 0) {
+        return(p(class = "small-muted", "No suppression is in force."))
+      }
+      selectInput(ns("remove_id"), "Suppression in force", choices = ids)
+    })
+
+    observeEvent(input$do_remove, {
+      vid <- input$remove_id %||% ""
+      why <- trimws(input$remove_reason %||% "")
+      if (!nzchar(vid)) {
+        showNotification("No suppression is in force.", type = "warning"); return()
+      }
+      if (!nzchar(why)) {
+        showNotification("A reason is required (audit trail).", type = "warning")
+        return()
+      }
+      n <- tryCatch(remove_suppression(suppressions_path(), vid, why,
+                                       Sys.info()[["user"]] %||% "unknown"),
+                    error = function(e) e)
+      if (inherits(n, "error")) {
+        showNotification(paste("Remove failed:", conditionMessage(n)),
+                         type = "error", duration = 10)
+      } else {
+        showNotification(sprintf("Removed the suppression of %s. From the next pre-run check it blocks again and is asked about on each run.", vid),
+                         type = "message", duration = 8)
+        updateTextInput(session, "remove_reason", value = "")
+        refresh(refresh() + 1)
+      }
     })
   })
 }
