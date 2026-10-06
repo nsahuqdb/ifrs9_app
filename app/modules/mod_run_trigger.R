@@ -641,6 +641,7 @@ mod_run_trigger_server <- function(id) {
             "Advisory \u2014 these do not block the run. They are re-checked ",
             "during the run and gated per the on_validation_error setting. ",
             "Duplicates show the offending rows so you can fix them at source.")),
+        uiOutput(ns("dq_standing")),
         DT::DTOutput(ns("input_dq_table"))
       )
     })
@@ -791,6 +792,29 @@ mod_run_trigger_server <- function(id) {
       out[!duplicated(out$id), , drop = FALSE]
     })
 
+    # The suppressions file the checks read: the project's, or the chosen
+    # config version's frozen copy (which this page cannot change).
+    .supp_live <- function() identical(input$snapshot_pick %||% "__LIVE__", "__LIVE__")
+    .supp_path <- function() {
+      if (.supp_live()) {
+        file.path(getOption("ifrs9.project_root", getwd()), "config",
+                  "validation_suppressions.yml")
+      } else {
+        file.path(snapshot_paths(input$snapshot_pick, snaps_root())$snapshot_dir,
+                  "config", "validation_suppressions.yml")
+      }
+    }
+    # bumped when this page ends standing suppressions
+    supp_rev <- reactiveVal(0)
+    # The standing suppressions in force, one per check.
+    .in_force <- reactive({
+      supp_rev()
+      tbl <- tryCatch(load_suppressions(.supp_path()), error = function(e) NULL)
+      if (is.null(tbl) || nrow(tbl) == 0) return(NULL)
+      tbl <- tbl[tbl$validator_id %in% active_suppression_ids(tbl), , drop = FALSE]
+      tbl[!duplicated(tbl$validator_id), , drop = FALSE]
+    })
+
     # Standing suppressions that took effect in the check: their reasons, from
     # the suppressions file the check read.
     .standing_hits <- reactive({
@@ -804,20 +828,129 @@ mod_run_trigger_server <- function(id) {
                              as.logical(v$suppressed %||% FALSE)])
       }
       ids <- setdiff(unique(ids), accepted_rv()$validator_id)
-      if (length(ids) == 0) return(NULL)
-      pick <- input$snapshot_pick %||% "__LIVE__"
-      path <- if (pick == "__LIVE__") {
-        file.path(getOption("ifrs9.project_root", getwd()), "config",
-                  "validation_suppressions.yml")
-      } else {
-        file.path(snapshot_paths(pick, snaps_root())$snapshot_dir, "config",
-                  "validation_suppressions.yml")
+      tbl <- .in_force()
+      if (length(ids) == 0 || is.null(tbl)) return(NULL)
+      tbl[tbl$validator_id %in% ids, , drop = FALSE]
+    })
+
+    # Findings a standing suppression accepts are accepted without asking,
+    # in every run -- said plainly, with who saved each, when and why, and a
+    # way to end them (on the default config). `others`: in force for checks
+    # not run yet, named and ended with the rest.
+    .saved_li <- function(tbl, prefix = NULL) {
+      lapply(seq_len(nrow(tbl)), function(i) tags$li(
+        prefix, tags$code(tbl$validator_id[i]),
+        sprintf(" \u2014 saved by %s%s%s: ", tbl$approved_by[i] %||% "?",
+                if (nzchar(tbl$approved_at[i] %||% ""))
+                  paste0(" on ", substr(tbl$approved_at[i], 1, 10)) else "",
+                if (nzchar(tbl$valid_until[i] %||% ""))
+                  paste0(", until ", tbl$valid_until[i]) else ""),
+        tags$em(tbl$reason[i])))
+    }
+    .standing_alert <- function(hits, others, button_id, preview = FALSE) {
+      n_h <- if (is.null(hits)) 0L else nrow(hits)
+      n_o <- if (is.null(others)) 0L else nrow(others)
+      if (n_h + n_o == 0) return(NULL)
+      div(class = if (n_h > 0) "alert alert-warning" else "alert alert-secondary",
+          style = "margin-top:0.6em;",
+          if (n_h > 0)
+            tagList(tags$strong(sprintf(
+                      if (preview) "%d of these findings will be accepted automatically, without asking, by the pre-run check and every run. "
+                      else "%d finding(s) accepted automatically, without asking. ",
+                      n_h)),
+                    "They are standing suppressions in validation_suppressions.yml, ",
+                    "which apply to every run until they expire or are ended:")
+          else
+            tagList(tags$strong(sprintf("%d standing suppression(s) in force for checks the pre-run check runs. ",
+                                        n_o)),
+                    "If those checks fail, the findings are accepted automatically, ",
+                    "without asking, in every run:"),
+          tags$ul(style = "margin:0.3em 0 0.3em 0;",
+                  if (n_h > 0) .saved_li(hits),
+                  if (n_o > 0) .saved_li(others,
+                                         if (n_h > 0) "Also saved, for a check the pre-run check runs: ")),
+          if (.supp_live())
+            tagList("End them, and each run asks whether to accept the finding \u2014 ",
+                    "for that run only. ",
+                    actionButton(ns(button_id), "Stop auto-accepting\u2026",
+                                 icon = icon("ban"),
+                                 class = "btn-sm btn-warning",
+                                 style = "margin-left:0.4em;"))
+          else
+            "They belong to this config version's frozen copy, so they cannot be ended here.")
+    }
+
+    # The input preview runs without suppressions; say which of its findings
+    # the pre-run check and every run will accept automatically.
+    .preview_standing <- reactive({
+      v <- input_dq(); tbl <- .in_force()
+      if (is.null(v) || nrow(v) == 0 || is.null(tbl)) return(NULL)
+      sup <- if ("suppressible" %in% names(v)) as.logical(v$suppressible) else TRUE
+      failed <- v$id[!as.logical(v$passed) & sup]
+      list(hits = tbl[tbl$validator_id %in% failed, , drop = FALSE],
+           others = tbl[!tbl$validator_id %in% v$id, , drop = FALSE])
+    })
+    output$dq_standing <- renderUI({
+      ps <- .preview_standing()
+      if (is.null(ps)) return(NULL)
+      .standing_alert(ps$hits, ps$others, "do_stop_auto_val", preview = TRUE)
+    })
+
+    stop_entries <- reactiveVal(NULL)
+    .stop_auto_modal <- function(tbl) {
+      if (is.null(tbl) || nrow(tbl) == 0) return()
+      stop_entries(tbl)
+      showModal(modalDialog(
+        title = "Stop accepting these automatically",
+        p(class = "small-muted",
+          "Each is a standing suppression in validation_suppressions.yml, which ",
+          "accepts its finding in every run, without asking, until it expires. ",
+          "Ending one stops that from today: the entry stays in the file with ",
+          "who ended it and why, and the audit log records it. The finding then ",
+          "blocks again, and each run asks whether to accept it, for that run only."),
+        checkboxGroupInput(ns("stop_ids"), "Suppressions to end",
+                           choices = setNames(tbl$validator_id,
+                                              sprintf("%s \u2014 saved by %s: %s",
+                                                      tbl$validator_id,
+                                                      tbl$approved_by, tbl$reason)),
+                           selected = tbl$validator_id),
+        textAreaInput(ns("stop_reason"), "Reason (required)", rows = 2,
+                      value = "Accept findings run by run, not for every run."),
+        textInput(ns("stop_by"), "Ended by",
+                  value = Sys.getenv("IFRS9_USER", Sys.info()[["user"]] %||% "")),
+        footer = tagList(modalButton("Cancel"),
+                         actionButton(ns("do_stop_confirm"), "End them and check again",
+                                      class = "btn-primary")),
+        size = "l", easyClose = TRUE))
+    }
+    observeEvent(input$do_stop_auto_val, {
+      ps <- .preview_standing()
+      .stop_auto_modal(rbind(ps$hits, ps$others))
+    })
+    observeEvent(input$do_stop_auto, .stop_auto_modal(.standing_hits()))
+    observeEvent(input$do_stop_confirm, {
+      ids <- input$stop_ids
+      why <- trimws(input$stop_reason %||% "")
+      who <- trimws(input$stop_by %||% "")
+      if (length(ids) == 0) {
+        showNotification("Pick at least one.", type = "warning"); return()
       }
-      tbl <- tryCatch(load_suppressions(path), error = function(e) NULL)
-      if (is.null(tbl) || nrow(tbl) == 0) return(NULL)
-      tbl <- tbl[tbl$validator_id %in% intersect(ids, active_suppression_ids(tbl)), ,
-                 drop = FALSE]
-      tbl[!duplicated(tbl$validator_id), , drop = FALSE]
+      if (!nzchar(why) || !nzchar(who)) {
+        showNotification("A reason and a name are required (audit trail).",
+                         type = "error"); return()
+      }
+      if (!.supp_live()) return()
+      for (vid in ids) {
+        tryCatch(remove_suppression(.supp_path(), vid, why, who),
+                 error = function(e)
+                   showNotification(sprintf("%s: %s", vid, conditionMessage(e)),
+                                    type = "error", duration = 10))
+      }
+      removeModal()
+      supp_rev(supp_rev() + 1)
+      if (!is.null(pre_run_results())) .run_checks()
+      showNotification(sprintf("Ended %d standing suppression(s). Those findings are no longer accepted automatically: each run asks.",
+                               length(ids)), type = "message", duration = 8)
     })
 
     output$accepted_panel <- renderUI({
@@ -846,18 +979,7 @@ mod_run_trigger_server <- function(id) {
               actionButton(ns("do_withdraw"), "Withdraw", icon = icon("rotate-left"),
                            class = "btn-sm btn-outline-secondary",
                            style = "margin-left:0.4em;")),
-        if (!is.null(st) && nrow(st) > 0)
-          div(class = "alert alert-secondary", style = "margin-top:0.6em;",
-              tags$strong(sprintf("%d finding(s) accepted by standing suppressions: ",
-                                  nrow(st))),
-              paste(sprintf("%s (approved by %s%s: %s)", st$validator_id,
-                            st$approved_by,
-                            ifelse(nzchar(st$valid_until),
-                                   paste0(", until ", st$valid_until), ""),
-                            st$reason), collapse = "; "),
-              ". A standing suppression applies to every run until it expires or ",
-              "is removed (", tags$strong("Validation suppressions"), " page), ",
-              "so these are not asked about.")
+        .standing_alert(st, NULL, "do_stop_auto")
       )
     })
 
@@ -961,8 +1083,7 @@ mod_run_trigger_server <- function(id) {
         if (nrow(errs) > 0)
           p(tags$span(class = "pill pill-error",
                       sprintf("%d READY ERROR — Run blocked", nrow(errs))),
-            " Fix at source, or accept a finding with a reason on ",
-            tags$strong("Validation suppressions"), "."),
+            " Fix at source, or accept it for this run (below), with a reason."),
         tags$details(
           tags$summary("Reasons, fixes and the row funnel"),
           DT::DTOutput(ns("readiness_reasons")),
@@ -1007,10 +1128,12 @@ mod_run_trigger_server <- function(id) {
       } else {
         tags$span(class = "pill pill-pass", sprintf("All %d checks passed", n_pass))
       }
-      tagList(
-        h5(summary_pill),
-        DT::DTOutput(ns("pre_run_table"))
-      )
+      n_auto <- nrow(.standing_hits() %||% data.frame())
+      h5(summary_pill,
+         if (n_auto > 0)
+           tags$span(class = "pill pill-warn", style = "margin-left:0.4em;",
+                     sprintf("%d accepted automatically by saved suppressions",
+                             n_auto)))
     })
 
     output$pre_run_table <- DT::renderDT({
@@ -1022,8 +1145,12 @@ mod_run_trigger_server <- function(id) {
       # records every test, passed or not.
       r <- r[!r$passed, , drop = FALSE]
       if (nrow(r) == 0) return(NULL)
-      r$status <- sprintf('<span class="pill pill-%s">%s</span>',
-                          tolower(r$severity), toupper(r$severity))
+      # an accepted finding (for this run, or by a standing suppression)
+      # no longer blocks: say so rather than show its ERROR
+      acc <- as.logical(r$suppressed %||% FALSE)
+      r$status <- ifelse(acc, '<span class="pill pill-info">ACCEPTED</span>',
+                         sprintf('<span class="pill pill-%s">%s</span>',
+                                 tolower(r$severity), toupper(r$severity)))
       DT::datatable(
         data.frame(status=r$status, id=r$id, context=r$context,
                     description=r$description,
@@ -1642,8 +1769,11 @@ mod_run_trigger_server <- function(id) {
         card(
           card_header("3. Pre-run findings"),
           uiOutput(ns("pre_run_status")),
-          uiOutput(ns("readiness_status")),
-          uiOutput(ns("accepted_panel"))
+          # what can be accepted, what is, and what saved suppressions accept
+          # automatically -- under the verdict, above the findings
+          uiOutput(ns("accepted_panel")),
+          DT::DTOutput(ns("pre_run_table")),
+          uiOutput(ns("readiness_status"))
         )
       )
     )

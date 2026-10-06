@@ -7,7 +7,7 @@ A Shiny app to inspect and operate the IFRS9 ETL pipeline.
 | Page              | Read/Write | What it does |
 |-------------------|------------|---|
 | Runs              | Read       | Past runs newest-first; drill into manifest, validation, reconciliation, output preview. |
-| Run pipeline      | **Write**  | Pick a snapshot (or live config), run pre-check, trigger a full pipeline run. A blocking finding can be accepted for that run only, with a reason; it is recorded in the run (reports/accepted_findings.csv) and the audit log, and the next run asks again. |
+| Run pipeline      | **Write**  | Pick a snapshot (or live config), run pre-check, trigger a full pipeline run. A blocking finding can be accepted for that run only, with a reason; it is recorded in the run (reports/accepted_findings.csv) and the audit log, and the next run asks again. A finding a standing suppression accepts automatically is flagged from Validate inputs on, with who saved it and why; *Stop auto-accepting…* ends those suppressions so that each run asks. |
 | Snapshots         | Read       | Browse all snapshots with status badges and per-snapshot file viewer. |
 | Manage snapshots  | **Write**  | Create new snapshots; promote drafts through draft → pending → approved → archived. |
 | Suppressions      | **Write**  | Add validation suppressions with required reason + approver; auto-lapse on optional valid_until; remove one (ended from today, the entry kept with who and why). A suppression is standing: it applies to every run. |
