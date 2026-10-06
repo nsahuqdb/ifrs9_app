@@ -225,9 +225,19 @@ mod_audit_log_server <- function(id) {
     ns <- session$ns
     refresh <- reactiveVal(0)
     observeEvent(input$refresh, refresh(refresh() + 1))
+    # Re-read whenever the log changes -- a finding accepted on the pipeline
+    # page, a suppression removed, a run -- so the page is current when it is
+    # opened, without Refresh.
+    log_stamp <- reactivePoll(2000, session,
+      checkFunc = function() {
+        i <- file.info(audit_log_path())
+        paste(i$size, i$mtime)
+      },
+      valueFunc = function() Sys.time())
 
     audit <- reactive({
       refresh()
+      log_stamp()
       tryCatch(read_audit_log(),
                 error = function(e) {
                   showNotification(paste("Failed to read audit log:",

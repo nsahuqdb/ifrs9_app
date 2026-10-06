@@ -11,7 +11,7 @@ A Shiny app to inspect and operate the IFRS9 ETL pipeline.
 | Snapshots         | Read       | Browse all snapshots with status badges and per-snapshot file viewer. |
 | Manage snapshots  | **Write**  | Create new snapshots; promote drafts through draft → pending → approved → archived. |
 | Suppressions      | **Write**  | Add validation suppressions with required reason + approver; auto-lapse on optional valid_until; remove one (ended from today, the entry kept with who and why). A suppression is standing: it applies to every run. |
-| Audit log         | Read       | Filterable view of `logs/etl_audit.jsonl` with per-event human summary. |
+| Audit log         | Read       | Filterable view of `logs/etl_audit.jsonl` with per-event human summary; re-read whenever the log changes. Filter by run ID to see what a run accepted ("Finding accepted", with the reason). |
 
 ## How runs get into the app
 
