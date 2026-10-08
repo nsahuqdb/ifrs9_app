@@ -77,3 +77,6 @@ records why. If the app ever stops needing them, the block can go.
 Install the new `ifrs9qdb` and restart the app. Nothing in this folder changes,
 which is the point: the engine version is visible in the start-up message and
 in the run manifest, and the app cannot silently diverge from the tested code.
+
+Analytics -> Compare two runs -> Movement needs an engine with `ecl_bridge()`;
+with an older one the tab says so instead of failing.

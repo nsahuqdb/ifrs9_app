@@ -16,15 +16,17 @@ qdb_page_header <- function(title, subtitle = NULL, actions = NULL) {
       if (!is.null(actions)) div(class = "qdb-hd-actions", actions)))
 }
 
-# A row of KPI stat tiles. `stats` is a list of list(k=, v=, tone=) where tone
-# is one of "", "accent", "ok", "warn", "err".
+# A row of KPI stat tiles. `stats` is a list of list(k=, v=, tone=, s=) where
+# tone is one of "", "accent", "ok", "warn", "err" and the optional s is a
+# small line under the label (a mix, a coverage, a count).
 qdb_stats <- function(stats) {
   div(class = "qdb-stats",
     lapply(stats, function(s) {
       cls <- paste("qdb-stat", s$tone %||% "")
       div(class = trimws(cls),
         div(class = "v", s$v),
-        div(class = "k", s$k))
+        div(class = "k", s$k),
+        if (!is.null(s$s) && nzchar(s$s)) div(class = "s", s$s))
     }))
 }
 

@@ -5,7 +5,7 @@
 #
 #   Single run    Overview | PD | LGD & collateral | Exposure & maturity |
 #                 Concentration | Data quality
-#   Compare runs  ECL walk | Risk migration | Attribution | Flows
+#   Compare runs  Movement | Risk migration | Attribution | Flows | ...
 #
 # All computation lives in the ifrs9qdb package (pure functions, no Shiny).
 # This module only selects runs, loads reports and renders. Charts use
@@ -23,7 +23,8 @@
 
 .an_money <- function(x) {
   x <- suppressWarnings(as.numeric(x))
-  ifelse(is.na(x), "\u2014", format(round(x), big.mark = ",", scientific = FALSE))
+  # trimmed: format() pads a vector to its widest element
+  ifelse(is.na(x), "\u2014", trimws(format(round(x), big.mark = ",", scientific = FALSE)))
 }
 .an_pct <- function(x, digits = 2) {
   ifelse(is.na(x), "\u2014", sprintf(paste0("%+.", digits, "f%%"), x))
@@ -37,6 +38,146 @@
 .an_na <- function(msg = "Not available in this report.")
   div(class = "qdb-empty", style = "padding:26px 10px",
       div(class = "ico", icon("circle-info")), div(msg))
+
+.an_signed <- function(x) {
+  x <- suppressWarnings(as.numeric(x))
+  ifelse(is.na(x), "\u2014", paste0(ifelse(x > 0, "+", ""), .an_money(x)))
+}
+
+# A round step for about `x` per tick: 1, 2 or 5 times a power of ten.
+.an_nice <- function(x) {
+  p <- 10^floor(log10(x)); f <- x / p
+  p * (if (f <= 1) 1 else if (f <= 2) 2 else if (f <= 5) 5 else 10)
+}
+# Axis labels in the unit the tick step reads in, so ticks never repeat.
+.an_axis_fmt <- function(step) {
+  u <- if (step >= 1e9) list(1e9, "b") else if (step >= 1e6) list(1e6, "m")
+       else if (step >= 1e3) list(1e3, "k") else list(1, "")
+  d <- max(0, -floor(log10(step / u[[1]]) + 1e-9))
+  htmlwidgets::JS(sprintf(
+    "function(v){return (v/%s).toLocaleString('en-US',{minimumFractionDigits:%d,maximumFractionDigits:%d})+'%s';}",
+    format(u[[1]], scientific = FALSE), d, d, u[[2]]))
+}
+
+# A waterfall of `s` (label, amount, kind = "total" | "delta"): totals stand on
+# the axis, each step starts where the last ended. `zoom` starts the axis near
+# the lowest point the bars reach rather than at zero -- beside a provision in
+# the billions the causes are otherwise too small to see.
+.an_waterfall <- function(s, zoom = FALSE) {
+  amt <- s$amount; n <- length(amt)
+  base <- numeric(n); vis <- numeric(n); lvl <- numeric(n); run <- 0
+  for (i in seq_len(n)) {
+    if (s$kind[i] == "total") { base[i] <- 0; vis[i] <- amt[i]; run <- amt[i] }
+    else {
+      if (amt[i] >= 0) { base[i] <- run; vis[i] <- amt[i] }
+      else { base[i] <- run + amt[i]; vis[i] <- -amt[i] }
+      run <- run + amt[i]
+    }
+    lvl[i] <- run
+  }
+  cols <- ifelse(s$kind == "total", .AN_COL$plum,
+          ifelse(amt >= 0, .AN_COL$err, .AN_COL$ok))
+  js_arr <- function(x) paste0("[", paste(x, collapse = ","), "]")
+  col_js <- htmlwidgets::JS(sprintf("function(p){var c=%s; return c[p.dataIndex];}",
+                                    js_arr(paste0("'", cols, "'"))))
+  amt_js <- js_arr(sprintf("%.4f", amt))
+  tot_js <- js_arr(ifelse(s$kind == "total", "1", "0"))
+  lab_js <- htmlwidgets::JS(sprintf(paste0(
+    "function(p){var a=%s,t=%s,v=a[p.dataIndex],s=Math.abs(v);",
+    "var x=s>=1e9?(s/1e9).toFixed(2)+'b':s>=1e6?(s/1e6).toFixed(1)+'m':s>=1e3?(s/1e3).toFixed(0)+'k':s.toFixed(0);",
+    "return (t[p.dataIndex]||v==0?'':(v<0?'\u2212':'+'))+x;}"), amt_js, tot_js))
+  yax <- list(axisLabel = list(formatter = .an_m_axis()))
+  if (zoom && n > 0) {
+    lo <- min(lvl); hi <- max(lvl)
+    pad <- max((hi - lo) * 0.18, abs(hi) * 0.002, 1)
+    if (lo - pad > 0) {
+      step <- .an_nice((hi - lo + 2 * pad) / 6)
+      yax <- list(min = floor((lo - pad) / step) * step,
+                  max = ceiling((hi + pad) / step) * step, interval = step,
+                  axisLabel = list(formatter = .an_axis_fmt(step)))
+    }
+  }
+  df <- data.frame(step = factor(s$label, levels = unique(s$label)), base = base, vis = vis)
+  do.call(echarts4r::e_y_axis, c(list(
+    echarts4r::e_charts(df, step) |>
+      # stackStrategy "all": a step that takes the running total below zero
+      # still starts where the last one ended
+      echarts4r::e_bar(base, stack = "w", legend = FALSE, stackStrategy = "all",
+                       itemStyle = list(color = "transparent"),
+                       emphasis = list(disabled = TRUE), tooltip = list(show = FALSE)) |>
+      echarts4r::e_bar(vis, stack = "w", legend = FALSE, stackStrategy = "all",
+                       barWidth = "55%", itemStyle = list(color = col_js),
+                       label = list(show = TRUE, position = "top", fontSize = 10,
+                                    color = "#4a5162", formatter = lab_js))), yax)) |>
+    echarts4r::e_x_axis(axisLabel = list(interval = 0, rotate = 22, fontSize = 10)) |>
+    echarts4r::e_tooltip(formatter = htmlwidgets::JS(sprintf(
+      "function(p){var a=%s; return p.name+'<br/><b>'+a[p.dataIndex].toLocaleString('en-US',{maximumFractionDigits:0})+'</b>';}",
+      amt_js))) |>
+    echarts4r::e_grid(bottom = 90, left = 75, right = 20, top = 28) |>
+    echarts4r::e_toolbox_feature("saveAsImage")
+}
+
+# ---- Movement: the ECL bridge (ifrs9qdb ecl_bridge()) ----------------------
+.BL_LEVELS <- c("Whole book" = "book", "Customer" = "customer",
+                "Facility" = "facility", "Account type" = "account_type",
+                "Segment" = "segment", "Stage" = "stage", "Rating" = "rating")
+.BL_PLURAL <- c(customer = "customers", facility = "facilities",
+                account_type = "account types", segment = "segments",
+                stage = "stages", rating = "ratings")
+.BL_LABEL <- c(derecognised = "Derecognised", moved_out = "Moved out",
+               moved_in = "Moved in", new_business = "New business",
+               exposure = "Exposure", stage = "Stage migration",
+               rating = "Rating migration", macro = "Macro variables",
+               model = "Model", pd_curves = "PD curves (macro and model)",
+               lgd = "LGD & collateral", overlay = "Overlay", other = "Other")
+.BL_WHAT <- c(
+  derecognised = "In the prior run and not in this one, at its prior ECL.",
+  moved_out = "Left this selection for another, at its prior ECL.",
+  moved_in = "Joined this selection from another, at its prior ECL; its own causes follow.",
+  new_business = "New in this run, at its ECL.",
+  exposure = "Balance, EAD curve and remaining term, at the prior stage, rating, PD curves and LGD.",
+  stage = "Between 12-month and lifetime ECL, or into Stage 3 (booked at the outstanding balance).",
+  rating = "The new rating, on the prior run's PD curves.",
+  macro = "PD curves from this run's MEV forecasts, scenario weights and severities and GDP history, on the prior model.",
+  model = "The model's own change: coefficients, TTC anchor and PDs, the model chosen, how the MEV models combine.",
+  pd_curves = "The PD curves' change, macro and model together: a run has no frozen config to tell them apart.",
+  lgd = "Collateral, and so LGD, and the EIR.",
+  overlay = "The post-model overlay.",
+  other = "What a report holds that repricing does not, and contracts that could not be repriced in both runs.")
+
+# The bridge reprices both runs contract by contract -- seconds for a book of
+# thousands -- so the last few pairs are kept, keyed on each run's folder and
+# report and the report's time stamp: moving between levels, tabs and sessions
+# reads it rather than redoing it.
+.an_bridge_cache <- new.env(parent = emptyenv())
+.an_bridge <- function(dir_a, rep_a, dir_b, rep_b) {
+  key <- paste(dir_a, rep_a, file.mtime(rep_a), dir_b, rep_b, file.mtime(rep_b),
+               sep = "|")
+  hit <- .an_bridge_cache$items[[key]]
+  if (!is.null(hit)) return(hit)
+  br <- ecl_bridge(load_bridge_run(dir_a, rep_a), load_bridge_run(dir_b, rep_b))
+  if (isTRUE(br$ok))
+    .an_bridge_cache$items <- utils::tail(
+      c(.an_bridge_cache$items, stats::setNames(list(br), key)), 4)
+  br
+}
+
+# The steps worth a bar: exposure, stage, rating and LGD always; the macro
+# variables whenever the runs' config tells them from the model; the model
+# when it changed; the combined PD-curve step only when they cannot be told
+# apart; anything else when it moved.
+.bl_shown <- function(steps, br) {
+  keep <- vapply(seq_len(nrow(steps)), function(i) {
+    k <- steps$key[i]; a <- abs(steps$amount[i])
+    if (steps$kind[i] == "total") return(TRUE)
+    if (k %in% c("exposure", "stage", "rating", "lgd")) return(TRUE)
+    if (k == "macro") return(isTRUE(br$split))
+    if (k == "model") return(isTRUE(br$changes$model_changed) || a >= 0.5)
+    if (k == "pd_curves") return(!isTRUE(br$split))
+    a >= 0.5
+  }, logical(1))
+  steps[keep, , drop = FALSE]
+}
 
 mod_analytics_ui <- function(id) {
   ns <- NS(id)
@@ -95,14 +236,21 @@ mod_analytics_server <- function(id, runs_root = NULL) {
                   selected = ch[1], width = "100%")
     })
 
-    .report_for <- function(run_id) {
+    .run_dir_for <- function(run_id) {
       r <- runs_tbl(); if (is.null(r) || is.null(run_id) || !nzchar(run_id)) return(NULL)
       row <- r[r$run_id == run_id, , drop = FALSE]
-      if (nrow(row) == 0) return(NULL)
-      paths <- tryCatch(list_run_outputs(row$path[1]), error = function(e) character(0))
+      if (nrow(row) == 0) NULL else row$path[1]
+    }
+    # The report a run is read from: its overlay report when it has one.
+    .report_path_for <- function(run_id) {
+      d <- .run_dir_for(run_id); if (is.null(d)) return(NULL)
+      paths <- tryCatch(list_run_outputs(d), error = function(e) character(0))
       ov <- paths[grepl("^FinalEclReport_overlay_.*\\.csv$", basename(paths))]
       base <- paths[basename(paths) == "FinalEclReport.csv"]
-      pick <- if (length(ov) > 0) ov[1] else if (length(base) > 0) base[1] else NULL
+      if (length(ov) > 0) ov[1] else if (length(base) > 0) base[1] else NULL
+    }
+    .report_for <- function(run_id) {
+      pick <- .report_path_for(run_id)
       if (is.null(pick)) return(NULL)
       df <- tryCatch(utils::read.csv(pick, stringsAsFactors = FALSE, check.names = FALSE,
                                      na.strings = c("", "NA", "NaN")),
@@ -169,23 +317,17 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         if (identical(input$run_a, input$run_b))
           return(qdb_empty("Pick two different runs to compare.", "code-compare"))
         navset_card_tab(
-          nav_panel("ECL walk",
+          nav_panel("Movement",
             p(class = "small-muted", style = "margin-top:8px",
-              "Movement by cause; the steps sum to the closing balance."),
-            qdb_help(list(
-              "Opening / Closing" = "Total ECL of the prior and current run.",
-              "Derecognised" = "ECL of contracts in the prior run that are absent from the current one \u2014 repaid, closed or written off. Always negative.",
-              "New business" = "ECL of contracts present now but not before.",
-              "Exposure movement" = "For contracts in both runs: <code>(exposure now &minus; exposure before) &times; coverage before</code>. The provision effect of lending more or less, at the old risk level.",
-              "Stage migration" = "For contracts whose stage changed: <code>exposure now &times; (coverage now &minus; coverage before)</code>.",
-              "Risk &amp; model" = "The same coverage effect for contracts whose stage did NOT change \u2014 rating moves, PD or LGD changes, model or config changes.",
-              "Other" = "Contracts with no exposure in the prior run, so no prior coverage exists to split the movement with. Their whole change sits here rather than being spread.",
-              "Coverage" = "ECL divided by on-balance exposure.",
-              "Drilling in" = "Open any step in the table to see the contracts behind it, largest first."),
-              note = "The steps sum exactly to the closing balance. Exposure is measured at the OLD coverage, then coverage change at the NEW exposure; that order is fixed so the walk is reproducible each quarter."),
-
-            uiOutput(ns("c_walk")),
-            reactable::reactableOutput(ns("t_walk"))),
+              "Why the provision moved, for the whole book or for the customers, facilities, account types, segments, stages or ratings you choose: each run's figures side by side, then the waterfall between them."),
+            qdb_help(c(
+              stats::setNames(as.list(unname(.BL_WHAT)), unname(.BL_LABEL[names(.BL_WHAT)])),
+              list("Choosing a level" = "A contract belongs to a customer, account type, segment, stage or rating in each run by its value in that run, so the prior and current figures are each run's own. A contract that changed group is <b>Moved out</b> of the old one and <b>Moved in</b> to the new one, at its prior ECL; its causes then count in the new one.")),
+              note = "Each contract is repriced from the prior run to the current one a cause at a time, in the order shown, on each run's frozen config, so the steps sum exactly to the closing ECL. Macro variables and Model are told apart by pricing once more on PD curves built from the current run's macro inputs and the prior run's model."),
+            radioButtons(ns("bl_level"), "Compare", choices = .BL_LEVELS, inline = TRUE,
+                         selected = isolate(input$bl_level) %||% "book"),
+            uiOutput(ns("bl_pick")),
+            uiOutput(ns("bl_body"))),
           nav_panel("Risk migration",
             fluidRow(column(4, uiOutput(ns("pick_rt2")))),
             p(class = "small-muted", "Customer counts, ratings ordered best first."),
@@ -612,38 +754,237 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     })
 
     # ---------------------------------------------------------- charts -----
-    output$c_walk <- renderUI({
-      w <- walk_r(); if (is.null(w)) return(NULL)
-      s <- w$steps
-      if (!.an_echarts())
-        return(qdb_reactable(data.frame(Step = s$label, Amount = .an_money(s$amount)),
-                             searchable = FALSE, page_size = 10))
-      amt <- s$amount; base <- numeric(length(amt)); vis <- numeric(length(amt)); run <- 0
-      for (i in seq_along(amt)) {
-        if (s$kind[i] == "total") { base[i] <- 0; vis[i] <- amt[i]; run <- amt[i] }
-        else {
-          if (amt[i] >= 0) { base[i] <- run; vis[i] <- amt[i] }
-          else { base[i] <- run + amt[i]; vis[i] <- -amt[i] }
-          run <- run + amt[i]
-        }
+    # -------------------------------------------------------- movement -----
+    bridge_r <- reactive({
+      req(identical(input$mode, "compare"))
+      bump()
+      ra <- input$run_a; rb <- input$run_b
+      if (is.null(ra) || is.null(rb) || identical(ra, rb)) return(NULL)
+      if (!exists("ecl_bridge", mode = "function"))
+        return(list(ok = FALSE, reason = "this needs a newer ifrs9qdb (with ecl_bridge()); re-install the engine."))
+      da <- .run_dir_for(ra); db <- .run_dir_for(rb)
+      pa <- .report_path_for(ra); pb <- .report_path_for(rb)
+      if (is.null(da) || is.null(db) || is.null(pa) || is.null(pb)) return(NULL)
+      withProgress(message = "Repricing both runs, contract by contract\u2026", value = 0.4,
+        tryCatch(.an_bridge(da, pa, db, pb),
+                 error = function(e) list(ok = FALSE, reason = conditionMessage(e))))
+    })
+    bl_level <- reactive({
+      lv <- input$bl_level %||% "book"
+      if (lv %in% .BL_LEVELS) lv else "book"
+    })
+    bl_members_tbl <- reactive({
+      br <- bridge_r(); lv <- bl_level()
+      if (is.null(br) || !isTRUE(br$ok) || lv == "book") return(NULL)
+      bridge_members(br$rows, lv)
+    })
+    # One picker per level, so each level keeps its own choice.
+    .bl_pick_id <- function(lv) paste0("bl_members_", lv)
+    bl_sel <- reactive({
+      lv <- bl_level(); if (lv == "book") return(character(0))
+      as.character(input[[.bl_pick_id(lv)]] %||% character(0))
+    })
+    output$bl_pick <- renderUI({
+      lv <- bl_level(); m <- bl_members_tbl()
+      if (lv == "book" || is.null(m)) return(NULL)
+      if (nrow(m) == 0) return(.an_na("Nothing at this level in either run."))
+      selectizeInput(ns(.bl_pick_id(lv)), paste("Which", .BL_PLURAL[[lv]]),
+                     choices = NULL, multiple = TRUE, width = "100%",
+                     options = list(placeholder = "Type an id or a name \u2014 largest move first",
+                                    plugins = list("remove_button")))
+    })
+    # The choices are sent as they are typed for (server = TRUE): a level can
+    # hold thousands of customers or facilities.
+    observe({
+      lv <- bl_level(); m <- bl_members_tbl()
+      if (lv == "book" || is.null(m) || nrow(m) == 0) return()
+      lab <- sprintf("%s  \u00b7  ECL %s \u2192 %s (%s)", m$label, .an_money(m$ecl_a),
+                     .an_money(m$ecl_b), .an_signed(m$change))
+      keep <- intersect(isolate(input[[.bl_pick_id(lv)]]) %||% character(0), m$value)
+      updateSelectizeInput(session, .bl_pick_id(lv), server = TRUE,
+                           choices = stats::setNames(m$value, lab), selected = keep)
+    })
+    bl_view <- reactive({
+      br <- bridge_r(); lv <- bl_level(); m <- bl_sel()
+      if (is.null(br) || !isTRUE(br$ok) || (lv != "book" && length(m) == 0)) return(NULL)
+      bridge_view(br$rows, lv, m)
+    })
+
+    .bl_move_style <- function(v)
+      c(if (isTRUE(v > 0)) list(color = .AN_COL$err) else if (isTRUE(v < 0)) list(color = .AN_COL$ok),
+        list(fontWeight = "600"))
+    .bl_txt <- function(x) if (is.null(x) || length(x) == 0 || is.na(x[1])) "\u2014" else as.character(x[1])
+    .bl_stage_mix <- function(p) {
+      mix <- unlist(p$stage_exposure); tot <- sum(mix)
+      if (!length(mix) || !tot) return("")
+      mix <- mix[order(names(mix))]
+      paste(sprintf("S%s %.0f%%", names(mix), 100 * mix / tot), collapse = " \u00b7 ")
+    }
+    .bl_ratings <- function(p) {
+      r <- p$ratings
+      if (is.null(r) || nrow(r) <= 1) return("")
+      # shares of the selection's whole exposure, not of the ratings listed
+      tot <- p$exposure %||% 0
+      if (!is.finite(tot) || tot <= 0) tot <- sum(r$exposure)
+      if (!tot) tot <- 1
+      r <- utils::head(r, 3)
+      paste(sprintf("%s %.0f%%", r$rating, 100 * r$exposure / tot), collapse = " \u00b7 ")
+    }
+    .bl_side <- function(title, sub, p) {
+      single <- isTRUE(p$contracts == 1)
+      stg <- if (is.null(p$worst_stage) || is.na(p$worst_stage)) "\u2014"
+             else if (single) paste("Stage", p$worst_stage) else paste("worst", p$worst_stage)
+      div(class = "qdb-card bl-side",
+        div(class = "bl-side-hd", tags$b(title), span(class = "small-muted", sub)),
+        qdb_stats(list(
+          list(k = "Exposure", v = .an_money(p$exposure),
+               s = paste("off balance", .an_money(p$exposure_off))),
+          list(k = "ECL", v = .an_money(p$ecl), tone = "accent",
+               s = paste0("coverage ", .an_pct0(p$coverage),
+                          if (isTRUE(abs(p$overlay) > 0)) paste0(" \u00b7 overlay ", .an_money(p$overlay)) else "")),
+          list(k = "Rating", v = .bl_txt(p$rating), s = .bl_ratings(p)),
+          list(k = "Stage", v = stg, s = .bl_stage_mix(p)))),
+        qdb_stats(list(
+          list(k = "PD, lifetime", v = .an_pct0(100 * (p$pd %||% NA_real_))),
+          list(k = "LGD", v = .an_pct0(100 * (p$lgd %||% NA_real_))),
+          list(k = "Contracts", v = .an_money(p$contracts),
+               s = paste(.an_money(p$customers), "customer(s)")),
+          list(k = "Days past due",
+               v = if (is.null(p$dpd_max) || is.na(p$dpd_max)) "\u2014" else .an_money(p$dpd_max),
+               s = "the most, across the contracts"))))
+    }
+
+    output$bl_body <- renderUI({
+      br <- bridge_r()
+      if (is.null(br))
+        return(qdb_empty("Pick two different runs that both have an ECL report.", "code-compare"))
+      if (!isTRUE(br$ok))
+        return(.an_na(paste("The movement could not be worked out:", br$reason)))
+      lv <- bl_level()
+      if (lv != "book" && length(bl_sel()) == 0)
+        return(tagList(
+          p(class = "small-muted", sprintf(
+            "Every %s below, each with its own waterfall in one row. Choose one or more above to see the detail.",
+            tolower(names(.BL_LEVELS)[.BL_LEVELS == lv]))),
+          reactable::reactableOutput(ns("bl_by"))))
+      v <- bl_view(); if (is.null(v)) return(NULL)
+      ch <- br$changes
+      mv <- v$closing - v$opening
+      tone <- if (mv > 0) "err" else if (mv < 0) "ok" else ""
+      sub <- function(side) paste(br$runs[[side]]$run, "\u00b7", .bl_txt(br$runs[[side]]$extract_date))
+      chg_tbl <- function(items) {
+        if (!length(items)) return(NULL)
+        val <- function(x) if (is.null(x) || length(x) == 0 || is.na(x[1])) "\u2014" else as.character(x[1])
+        tags$table(class = "table table-sm", style = "margin:4px 0 10px",
+          tags$tr(tags$th("What"), tags$th("Prior"), tags$th("Current")),
+          lapply(items, function(it) tags$tr(tags$td(tags$code(it$item)),
+                                             tags$td(val(it$before)), tags$td(val(it$after)))))
       }
-      cols <- ifelse(s$kind == "total", .AN_COL$plum,
-              ifelse(amt >= 0, .AN_COL$err, .AN_COL$ok))
-      col_js <- htmlwidgets::JS(sprintf("function(p){var c=[%s]; return c[p.dataIndex];}",
-                                        paste0("'", cols, "'", collapse = ",")))
-      amt_js <- paste0("[", paste(sprintf("%.4f", amt), collapse = ","), "]")
-      df <- data.frame(step = factor(s$label, levels = s$label), base = base, vis = vis)
-      echarts4r::e_charts(df, step) |>
-        echarts4r::e_bar(base, stack = "w", legend = FALSE,
-                         itemStyle = list(color = "transparent")) |>
-        echarts4r::e_bar(vis, stack = "w", legend = FALSE, bar_width = "55%",
-                         itemStyle = list(color = col_js)) |>
-        echarts4r::e_y_axis(axisLabel = list(formatter = .an_m_axis())) |>
-        echarts4r::e_x_axis(axisLabel = list(interval = 0, rotate = 22, fontSize = 10)) |>
-        echarts4r::e_tooltip(formatter = htmlwidgets::JS(sprintf(
-          "function(p){var a=%s; return p.name+'<br/><b>'+a[p.dataIndex].toLocaleString(undefined,{maximumFractionDigits:0})+'</b>';}", amt_js))) |>
-        echarts4r::e_grid(bottom = 90, left = 75, right = 20, top = 20) |>
-        echarts4r::e_toolbox_feature("saveAsImage")
+      tagList(
+        fluidRow(column(6, .bl_side("Prior run", sub("a"), v$before)),
+                 column(6, .bl_side("Current run", sub("b"), v$after))),
+        qdb_stats(list(
+          list(k = "Prior ECL", v = .an_money(v$opening), tone = "accent"),
+          list(k = "Current ECL", v = .an_money(v$closing), tone = "accent"),
+          list(k = "Movement", v = .an_signed(mv), tone = tone),
+          list(k = "% change", v = if (v$opening != 0) .an_pct(100 * mv / v$opening) else "\u2014",
+               tone = tone))),
+        uiOutput(ns("bl_chart")),
+        p(class = "small-muted", sprintf(
+          "Each contract is repriced from the prior run to this one a cause at a time, in the order shown, so the bars sum exactly to the current ECL (residual %.2f).%s",
+          v$residual, if (isTRUE(ch$model_changed)) "" else " The model did not change, so there is no model step.")),
+        lapply(br$notes, function(n) div(class = "alert alert-info", style = "padding:0.5em 0.8em; margin:0.4em 0", n)),
+        reactable::reactableOutput(ns("bl_steps")),
+        tags$details(class = "qdb-help",
+          tags$summary(icon("sliders"), "What changed in the model and the macro inputs"),
+          if (!isTRUE(ch$known)) p("A run has no frozen config, so this cannot be said.")
+          else tagList(
+            p(tags$b("Model"), if (isTRUE(ch$model_changed)) " \u2014 changed" else " \u2014 unchanged"),
+            chg_tbl(ch$model),
+            p(tags$b("Macro inputs"), if (isTRUE(ch$macro_changed)) " \u2014 changed" else " \u2014 unchanged"),
+            chg_tbl(ch$macro))),
+        h5(style = "margin-top:14px", "Contracts behind it"),
+        p(class = "small-muted", "Largest moves first. Each row's causes sum to its change."),
+        reactable::reactableOutput(ns("bl_contracts")),
+        h5(style = "margin-top:14px",
+           if (lv == "book") "By segment" else paste("Every", tolower(names(.BL_LEVELS)[.BL_LEVELS == lv]))),
+        reactable::reactableOutput(ns("bl_by")))
+    })
+
+    output$bl_chart <- renderUI({
+      v <- bl_view(); br <- bridge_r(); if (is.null(v)) return(NULL)
+      s <- .bl_shown(v$steps, br)
+      if (!.an_echarts())
+        return(p(class = "small-muted", "The chart needs the echarts4r package; the steps are in the table below."))
+      .an_waterfall(s, zoom = TRUE)
+    })
+
+    output$bl_steps <- reactable::renderReactable({
+      v <- bl_view(); br <- bridge_r(); if (is.null(v)) return(NULL)
+      s <- .bl_shown(v$steps, br)
+      s <- s[s$kind == "delta", , drop = FALSE]
+      df <- data.frame(Step = s$label, Amount = s$amount,
+                       `% of prior` = if (v$opening != 0) 100 * s$amount / v$opening else NA_real_,
+                       `What it is` = unname(.BL_WHAT[s$key]), check.names = FALSE)
+      .rt(df, sortable = FALSE, pagination = FALSE, columns = list(
+        Step = reactable::colDef(minWidth = 150),
+        Amount = reactable::colDef(align = "right", minWidth = 110, cell = function(v) .an_signed(v),
+          style = .bl_move_style),
+        `% of prior` = reactable::colDef(align = "right", minWidth = 80,
+          cell = function(v) if (is.na(v)) "\u2014" else .an_pct(v)),
+        `What it is` = reactable::colDef(minWidth = 320)))
+    })
+
+    output$bl_contracts <- reactable::renderReactable({
+      v <- bl_view(); if (is.null(v)) return(NULL)
+      ct <- v$contracts
+      if (is.null(ct) || nrow(ct) == 0) return(NULL)
+      comp <- names(.BL_LABEL)[names(.BL_LABEL) %in% names(ct)]
+      comp <- comp[vapply(comp, function(k) sum(abs(ct[[k]]), na.rm = TRUE) >= 0.5, logical(1))]
+      arrow <- function(a, b) paste(ifelse(is.na(a), "", a), "\u2192", ifelse(is.na(b), "", b))
+      df <- data.frame(Contract = ct$contract,
+                       Customer = ifelse(is.na(ct$customer_b), ct$customer_a, ct$customer_b),
+                       Name = ct$name, Status = ct$status,
+                       Stage = arrow(ct$stage_a, ct$stage_b),
+                       Rating = arrow(ct$rating_a, ct$rating_b),
+                       `ECL prior` = ct$ecl_a, `ECL current` = ct$ecl_b, Change = ct$change,
+                       check.names = FALSE, stringsAsFactors = FALSE)
+      for (k in comp) df[[.BL_LABEL[[k]]]] <- ct[[k]]
+      money <- c("ECL prior", "ECL current", unname(.BL_LABEL[comp]))
+      cols <- c(stats::setNames(lapply(money, function(nm)
+                  reactable::colDef(align = "right", minWidth = 105,
+                                    cell = function(v) .an_money(v))), money),
+                list(Change = reactable::colDef(align = "right", minWidth = 105,
+                  cell = function(v) .an_signed(v),
+                  style = .bl_move_style),
+                  Name = reactable::colDef(minWidth = 170)))
+      .rt(df, defaultPageSize = 10, searchable = TRUE, columns = cols)
+    })
+
+    output$bl_by <- reactable::renderReactable({
+      br <- bridge_r(); if (is.null(br) || !isTRUE(br$ok)) return(NULL)
+      lv <- bl_level(); if (lv == "book") lv <- "segment"
+      by <- bridge_by(br$rows, lv)
+      if (is.null(by) || nrow(by) == 0) return(NULL)
+      steps <- names(.BL_LABEL)[names(.BL_LABEL) %in% names(by)]
+      steps <- steps[vapply(steps, function(k) sum(abs(by[[k]])) >= 0.5, logical(1))]
+      lvl_name <- names(.BL_LEVELS)[.BL_LEVELS == lv]
+      # the group with a customer's or a facility's name
+      df <- data.frame(g = by$label %||% by$group, `Prior ECL` = by$opening,
+                       check.names = FALSE, stringsAsFactors = FALSE)
+      names(df)[1] <- lvl_name
+      for (k in steps) df[[.BL_LABEL[[k]]]] <- by[[k]]
+      df$`Current ECL` <- by$closing
+      df$Change <- by$change
+      money <- c("Prior ECL", unname(.BL_LABEL[steps]), "Current ECL")
+      cols <- c(stats::setNames(lapply(money, function(nm)
+                  reactable::colDef(align = "right", minWidth = 105,
+                                    cell = function(v) .an_money(v))), money),
+                stats::setNames(list(reactable::colDef(minWidth = 190)), lvl_name),
+                list(Change = reactable::colDef(align = "right", minWidth = 105,
+                  cell = function(v) .an_signed(v),
+                  style = .bl_move_style)))
+      .rt(df, defaultPageSize = 12, searchable = nrow(df) > 12, columns = cols)
     })
 
     output$c_ctrans <- renderUI({
@@ -2559,30 +2900,6 @@ mod_analytics_server <- function(id, runs_root = NULL) {
 
     # ---------------------------------------------------------- tables -----
     .rt <- function(df, ...) reactable::reactable(df, class = "qdb-rt", compact = TRUE, ...)
-
-    output$t_walk <- reactable::renderReactable({
-      w <- walk_r(); if (is.null(w)) return(NULL)
-      s <- w$steps
-      pct <- ifelse(s$kind == "delta", 100 * s$amount / max(w$opening, 1), NA_real_)
-      df <- data.frame(Step = s$label, Amount = s$amount, `% of opening` = pct,
-                       check.names = FALSE)
-      det <- ecl_walk_detail(dat_a(), dat_b())
-      .rt(df, sortable = FALSE, pagination = FALSE,
-        details = if (is.null(det)) NULL else function(index) {
-          lbl <- s$label[index]
-          if (!lbl %in% names(det))
-            return(div(class = "small-muted", style = "padding:8px 12px",
-                       "Opening and closing are totals, not a set of contracts."))
-          .drill_contracts(det[[lbl]])
-        },
-        columns = list(
-        Step = reactable::colDef(minWidth = 160),
-        Amount = reactable::colDef(align = "right", cell = function(v) .an_money(v),
-          style = function(v, i) if (s$kind[i] == "total") list(fontWeight = "700")
-                                 else list(color = if (v >= 0) .AN_COL$err else .AN_COL$ok)),
-        `% of opening` = reactable::colDef(align = "right",
-          cell = function(v) if (is.na(v)) "\u2014" else .an_pct(v))))
-    })
 
     output$t_attr <- reactable::renderReactable({
       m <- movement_by(dat_a(), dat_b(), input$attr_by %||% "portfolio")
