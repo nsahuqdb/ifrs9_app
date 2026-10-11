@@ -124,13 +124,15 @@
 .BL_PLURAL <- c(customer = "customers", facility = "facilities",
                 account_type = "account types", segment = "segments",
                 stage = "stages", rating = "ratings")
-.BL_LABEL <- c(derecognised = "Derecognised", moved_out = "Moved out",
+.BL_LABEL <- c(method = "Method change", derecognised = "Derecognised",
+               moved_out = "Moved out",
                moved_in = "Moved in", new_business = "New business",
                exposure = "Exposure", stage = "Stage migration",
                rating = "Rating migration", macro = "Macro variables",
                model = "Model", pd_curves = "PD curves (macro and model)",
                lgd = "LGD & collateral", overlay = "Overlay", other = "Other")
 .BL_WHAT <- c(
+  method = "The prior run repriced on this version of the calculation, with its own data and config: a change in the method itself (how months are counted, the EAD payment dates, the scenario weighting). Zero when both runs were priced the same way.",
   derecognised = "In the prior run and not in this one, at its prior ECL.",
   moved_out = "Left this selection for another, at its prior ECL.",
   moved_in = "Joined this selection from another, at its prior ECL; its own causes follow.",
@@ -139,7 +141,7 @@
   stage = "Between 12-month and lifetime ECL, or into Stage 3 (booked at the outstanding balance).",
   rating = "The new rating, on the prior run's PD curves.",
   macro = "PD curves from this run's MEV forecasts, scenario weights and severities and GDP history, on the prior model.",
-  model = "The model's own change: coefficients, TTC anchor and PDs, the model chosen, how the MEV models combine.",
+  model = "The model's own change: coefficients, TTC anchor and PDs, the model chosen, how the MEV models combine, and the ECL settings (EAD fallback rules, Stage 3 method, exposure cap).",
   pd_curves = "The PD curves' change, macro and model together: a run has no frozen config to tell them apart.",
   lgd = "Collateral, and so LGD, and the EIR.",
   overlay = "The post-model overlay.",
@@ -323,7 +325,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             qdb_help(c(
               stats::setNames(as.list(unname(.BL_WHAT)), unname(.BL_LABEL[names(.BL_WHAT)])),
               list("Choosing a level" = "A contract belongs to a customer, account type, segment, stage or rating in each run by its value in that run, so the prior and current figures are each run's own. A contract that changed group is <b>Moved out</b> of the old one and <b>Moved in</b> to the new one, at its prior ECL; its causes then count in the new one.")),
-              note = "Each contract is repriced from the prior run to the current one a cause at a time, in the order shown, on each run's frozen config, so the steps sum exactly to the closing ECL. Macro variables and Model are told apart by pricing once more on PD curves built from the current run's macro inputs and the prior run's model."),
+              note = "Each contract is repriced from the prior run to the current one a cause at a time, in the order shown, on each run's frozen config, so the steps sum exactly to the closing ECL. Macro variables and Model are told apart by pricing once more on PD curves built from the current run's macro inputs and the prior run's model. A prior run priced by an earlier version of the calculation is first repriced on this one, and that is Method change."),
             radioButtons(ns("bl_level"), "Compare", choices = .BL_LEVELS, inline = TRUE,
                          selected = isolate(input$bl_level) %||% "book"),
             uiOutput(ns("bl_pick")),
@@ -1711,6 +1713,10 @@ mod_analytics_server <- function(id, runs_root = NULL) {
           list(k = "% change", v = sprintf("%+.2f%%", pc),
                tone = if (r$delta > 0) "err" else if (r$delta < 0) "ok" else ""),
           list(k = "Contracts priced", v = .an_money(r$priced), tone = ""))),
+        # a run priced by an earlier version of the calculation: the change is
+        # measured from the run rebuilt on this engine, not its own provision
+        if (!is.null(r$note)) div(class = "alert alert-info", style = "margin:8px 0",
+                                  icon("circle-info"), " ", r$note),
         if (!is.null(r$weights_used)) {
           wu <- r$weights_used; wb <- r$weights_base
           nm <- names(wu)
@@ -1722,7 +1728,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             p(class = "small-muted", switch(r$weight_mode,
               auto = if (same) "Recomputed from the new path; unchanged from this run's weights."
                      else "Recomputed from the new path \u2014 years 1 and 2 of Non-Oil GDP drive them.",
-              hold = "Held at this run's weights, so the change shown is the PD effect alone.",
+              hold = "Held at this run's weights (what its config gives on this engine), so the change shown is the PD effect alone.",
               custom = "Set manually and normalised to 100%.")),
             qdb_reactable(data.frame(Scenario = nm,
               `This run` = if (is.null(wb)) rep("\u2014", length(nm))

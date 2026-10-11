@@ -38,7 +38,7 @@ Re-run the `renv::install()` line after pulling a new engine version.
 From a built package instead:
 
 ```r
-install.packages("ifrs9qdb_1.0.1.tar.gz", repos = NULL, type = "source")
+install.packages("ifrs9qdb_1.0.3.tar.gz", repos = NULL, type = "source")
 
 install.packages(c(
   "shiny", "bslib", "reactable", "echarts4r", "DT", "shinyAce",
@@ -57,7 +57,7 @@ shiny::runApp("app")
 from the project root. The console should show:
 
 ```
-[app] ifrs9qdb 1.0.0 loaded (325 exported, 87 internal attached)
+[app] ifrs9qdb 1.0.3 loaded (363 exported, 160 internal attached)
 ```
 
 If the package is missing the app stops immediately with an install
@@ -80,3 +80,8 @@ in the run manifest, and the app cannot silently diverge from the tested code.
 
 Analytics -> Compare two runs -> Movement needs an engine with `ecl_bridge()`;
 with an older one the tab says so instead of failing.
+
+The shipped config needs ifrs9qdb 1.0.3 or later: earlier versions ignore the
+ECL settings in `config/model.yml` (EAD payment rules, Stage 3 method, exposure
+cap, LGD) and price on built-in ones, so their figures do not match. The app
+warns at start-up when the installed engine is older.
