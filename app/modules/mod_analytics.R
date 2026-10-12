@@ -124,28 +124,51 @@
 .BL_PLURAL <- c(customer = "customers", facility = "facilities",
                 account_type = "account types", segment = "segments",
                 stage = "stages", rating = "ratings")
-.BL_LABEL <- c(method = "Method change", derecognised = "Derecognised",
-               moved_out = "Moved out",
-               moved_in = "Moved in", new_business = "New business",
-               exposure = "Exposure", stage = "Stage migration",
-               rating = "Rating migration", macro = "Macro variables",
-               model = "Model", pd_curves = "PD curves (macro and model)",
-               lgd = "LGD & collateral", overlay = "Overlay", other = "Other")
+# The waterfall's steps, as they are shown. The engine prices more causes than
+# this (BRIDGE_COMPONENTS); several are folded together here so the chart
+# reads as the steps a reviewer asks about. Same groups as the Python app.
+#   key -> engine components it sums; .BL_ALWAYS: shown even when zero
+.BL_GROUPS <- list(
+  derecognised = "derecognised", new_business = "new_business",
+  moved_out = "moved_out", moved_in = "moved_in",
+  exposure = "exposure", stage = "stage", rating = "rating",
+  macro = "macro", model = c("model", "method"), pd_curves = "pd_curves",
+  lgd = "lgd", overlay = "overlay", other = "other")
+.BL_ALWAYS <- c("derecognised", "new_business", "exposure", "stage", "rating",
+                "macro", "model", "lgd", "overlay")
+.BL_LABEL <- c(derecognised = "Derecognised", new_business = "New business",
+               moved_out = "Moved out", moved_in = "Moved in",
+               exposure = "Exposure change", stage = "Stage migration",
+               rating = "Rating migration", macro = "Macro variable change",
+               model = "Model change", pd_curves = "Macro and model change",
+               lgd = "LGD & collateral", overlay = "Overlay", other = "Unexplained")
 .BL_WHAT <- c(
-  method = "The prior run repriced on this version of the calculation, with its own data and config: a change in the method itself (how months are counted, the EAD payment dates, the scenario weighting). Zero when both runs were priced the same way.",
   derecognised = "In the prior run and not in this one, at its prior ECL.",
+  new_business = "New in this run, at its ECL.",
   moved_out = "Left this selection for another, at its prior ECL.",
   moved_in = "Joined this selection from another, at its prior ECL; its own causes follow.",
-  new_business = "New in this run, at its ECL.",
-  exposure = "Balance, EAD curve and remaining term, at the prior stage, rating, PD curves and LGD.",
+  exposure = "Contracts in both runs: repayments, drawdowns and amortisation -- the balance, the EAD curve and the remaining term -- at the prior stage, rating, PD curves and LGD.",
   stage = "Between 12-month and lifetime ECL, or into Stage 3 (booked at the outstanding balance).",
   rating = "The new rating, on the prior run's PD curves.",
-  macro = "PD curves from this run's MEV forecasts, scenario weights and severities and GDP history, on the prior model.",
-  model = "The model's own change: coefficients, TTC anchor and PDs, the model chosen, how the MEV models combine, and the ECL settings (EAD fallback rules, Stage 3 method, exposure cap).",
-  pd_curves = "The PD curves' change, macro and model together: a run has no frozen config to tell them apart.",
+  macro = "The macro inputs: MEV forecasts, scenario weights and severities, and the GDP history, on the prior model.",
+  model = "The macro PD model itself -- its variables, coefficients, TTC anchor and PDs, how the variables combine -- and the ECL settings (EAD fallback rules, Stage 3 method, exposure cap). When the two runs were priced by different versions of the engine, the change in the calculation is included here too.",
+  pd_curves = "Macro inputs and model together: one of the runs has no saved config, so the two cannot be told apart.",
   lgd = "Collateral, and so LGD, and the EIR.",
-  overlay = "The post-model overlay.",
-  other = "What a report holds that repricing does not, and contracts that could not be repriced in both runs.")
+  overlay = "The post-model management overlay.",
+  other = "Should be zero: what the repricing could not explain, and contracts that could not be repriced in both runs.")
+
+# One column per shown step, summing the engine's components.
+.bl_grouped <- function(df) {
+  for (k in names(.BL_GROUPS)) {
+    have <- intersect(.BL_GROUPS[[k]], names(df))
+    df[[paste0("g_", k)]] <- if (length(have)) rowSums(as.matrix(df[, have, drop = FALSE])) else 0
+  }
+  df
+}
+# The step columns worth a column in a table: non-zero somewhere.
+.bl_shown_cols <- function(df)
+  names(.BL_GROUPS)[vapply(names(.BL_GROUPS), function(k)
+    sum(abs(df[[paste0("g_", k)]]), na.rm = TRUE) >= 0.5, logical(1))]
 
 # The bridge reprices both runs contract by contract -- seconds for a book of
 # thousands -- so the last few pairs are kept, keyed on each run's folder and
@@ -169,16 +192,16 @@
 # when it changed; the combined PD-curve step only when they cannot be told
 # apart; anything else when it moved.
 .bl_shown <- function(steps, br) {
-  keep <- vapply(seq_len(nrow(steps)), function(i) {
-    k <- steps$key[i]; a <- abs(steps$amount[i])
-    if (steps$kind[i] == "total") return(TRUE)
-    if (k %in% c("exposure", "stage", "rating", "lgd")) return(TRUE)
-    if (k == "macro") return(isTRUE(br$split))
-    if (k == "model") return(isTRUE(br$changes$model_changed) || a >= 0.5)
-    if (k == "pd_curves") return(!isTRUE(br$split))
-    a >= 0.5
-  }, logical(1))
-  steps[keep, , drop = FALSE]
+  amt <- stats::setNames(steps$amount, steps$key)
+  split <- isTRUE(br$split)
+  out <- steps[steps$key == "opening", c("key", "label", "amount", "kind")]
+  for (k in names(.BL_GROUPS)) {
+    a <- sum(amt[intersect(.BL_GROUPS[[k]], names(amt))])
+    if (k == "macro" && !split) next      # its move is in "Macro and model change"
+    if (k %in% .BL_ALWAYS || abs(a) >= (if (k == "other") 1 else 0.5))
+      out <- rbind(out, data.frame(key = k, label = .BL_LABEL[[k]], amount = a, kind = "delta"))
+  }
+  rbind(out, steps[steps$key == "closing", c("key", "label", "amount", "kind")])
 }
 
 mod_analytics_ui <- function(id) {
@@ -325,7 +348,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             qdb_help(c(
               stats::setNames(as.list(unname(.BL_WHAT)), unname(.BL_LABEL[names(.BL_WHAT)])),
               list("Choosing a level" = "A contract belongs to a customer, account type, segment, stage or rating in each run by its value in that run, so the prior and current figures are each run's own. A contract that changed group is <b>Moved out</b> of the old one and <b>Moved in</b> to the new one, at its prior ECL; its causes then count in the new one.")),
-              note = "Each contract is repriced from the prior run to the current one a cause at a time, in the order shown, on each run's frozen config, so the steps sum exactly to the closing ECL. Macro variables and Model are told apart by pricing once more on PD curves built from the current run's macro inputs and the prior run's model. A prior run priced by an earlier version of the calculation is first repriced on this one, and that is Method change."),
+              note = "Each contract is repriced from the prior run to the current one a cause at a time, in the order shown, on each run's frozen config, so the steps sum exactly to the closing ECL. Macro variable change and Model change are told apart by pricing once more on PD curves built from the current run's macro inputs and the prior run's model. A prior run priced by an earlier version of the engine is first repriced on this one, and that difference is part of Model change. Unexplained appears only if the repricing leaves something over."),
             radioButtons(ns("bl_level"), "Compare", choices = .BL_LEVELS, inline = TRUE,
                          selected = isolate(input$bl_level) %||% "book"),
             uiOutput(ns("bl_pick")),
@@ -894,7 +917,8 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         uiOutput(ns("bl_chart")),
         p(class = "small-muted", sprintf(
           "Each contract is repriced from the prior run to this one a cause at a time, in the order shown, so the bars sum exactly to the current ECL (residual %.2f).%s",
-          v$residual, if (isTRUE(ch$model_changed)) "" else " The model did not change, so there is no model step.")),
+          v$residual, if (isTRUE(ch$model_changed) || isTRUE(abs(v$steps$amount[v$steps$key == "method"]) >= 0.5)) ""
+                      else " Neither the model nor the calculation changed, so the model step is zero.")),
         lapply(br$notes, function(n) div(class = "alert alert-info", style = "padding:0.5em 0.8em; margin:0.4em 0", n)),
         reactable::reactableOutput(ns("bl_steps")),
         tags$details(class = "qdb-help",
@@ -941,8 +965,8 @@ mod_analytics_server <- function(id, runs_root = NULL) {
       v <- bl_view(); if (is.null(v)) return(NULL)
       ct <- v$contracts
       if (is.null(ct) || nrow(ct) == 0) return(NULL)
-      comp <- names(.BL_LABEL)[names(.BL_LABEL) %in% names(ct)]
-      comp <- comp[vapply(comp, function(k) sum(abs(ct[[k]]), na.rm = TRUE) >= 0.5, logical(1))]
+      ct <- .bl_grouped(ct)
+      comp <- .bl_shown_cols(ct)
       arrow <- function(a, b) paste(ifelse(is.na(a), "", a), "\u2192", ifelse(is.na(b), "", b))
       df <- data.frame(Contract = ct$contract,
                        Customer = ifelse(is.na(ct$customer_b), ct$customer_a, ct$customer_b),
@@ -951,7 +975,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
                        Rating = arrow(ct$rating_a, ct$rating_b),
                        `ECL prior` = ct$ecl_a, `ECL current` = ct$ecl_b, Change = ct$change,
                        check.names = FALSE, stringsAsFactors = FALSE)
-      for (k in comp) df[[.BL_LABEL[[k]]]] <- ct[[k]]
+      for (k in comp) df[[.BL_LABEL[[k]]]] <- ct[[paste0("g_", k)]]
       money <- c("ECL prior", "ECL current", unname(.BL_LABEL[comp]))
       cols <- c(stats::setNames(lapply(money, function(nm)
                   reactable::colDef(align = "right", minWidth = 105,
@@ -968,14 +992,14 @@ mod_analytics_server <- function(id, runs_root = NULL) {
       lv <- bl_level(); if (lv == "book") lv <- "segment"
       by <- bridge_by(br$rows, lv)
       if (is.null(by) || nrow(by) == 0) return(NULL)
-      steps <- names(.BL_LABEL)[names(.BL_LABEL) %in% names(by)]
-      steps <- steps[vapply(steps, function(k) sum(abs(by[[k]])) >= 0.5, logical(1))]
+      by <- .bl_grouped(by)
+      steps <- .bl_shown_cols(by)
       lvl_name <- names(.BL_LEVELS)[.BL_LEVELS == lv]
       # the group with a customer's or a facility's name
       df <- data.frame(g = by$label %||% by$group, `Prior ECL` = by$opening,
                        check.names = FALSE, stringsAsFactors = FALSE)
       names(df)[1] <- lvl_name
-      for (k in steps) df[[.BL_LABEL[[k]]]] <- by[[k]]
+      for (k in steps) df[[.BL_LABEL[[k]]]] <- by[[paste0("g_", k)]]
       df$`Current ECL` <- by$closing
       df$Change <- by$change
       money <- c("Prior ECL", unname(.BL_LABEL[steps]), "Current ECL")
