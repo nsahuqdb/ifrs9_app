@@ -132,7 +132,8 @@
   derecognised = "derecognised", new_business = "new_business",
   moved_out = "moved_out", moved_in = "moved_in",
   exposure = "exposure", stage = "stage", rating = "rating",
-  macro = "macro", model = c("model", "method"), pd_curves = "pd_curves",
+  macro = "macro", model = "model", methodology = c("settings", "method"),
+  pd_curves = "pd_curves",
   lgd = "lgd", overlay = "overlay", other = "other")
 .BL_ALWAYS <- c("derecognised", "new_business", "exposure", "stage", "rating",
                 "macro", "model", "lgd", "overlay")
@@ -140,7 +141,8 @@
                moved_out = "Moved out", moved_in = "Moved in",
                exposure = "Exposure change", stage = "Stage migration",
                rating = "Rating migration", macro = "Macro variable change",
-               model = "Model change", pd_curves = "Macro and model change",
+               model = "Model change", methodology = "Methodology change",
+               pd_curves = "Macro and model change",
                lgd = "LGD & collateral", overlay = "Overlay", other = "Unexplained")
 .BL_WHAT <- c(
   derecognised = "In the prior run and not in this one, at its prior ECL.",
@@ -151,7 +153,8 @@
   stage = "Between 12-month and lifetime ECL, or into Stage 3 (booked at the outstanding balance).",
   rating = "The new rating, on the prior run's PD curves.",
   macro = "The macro inputs: MEV forecasts, scenario weights and severities, and the GDP history, on the prior model.",
-  model = "The macro PD model itself -- its variables, coefficients, TTC anchor and PDs, how the variables combine -- and the ECL settings (EAD fallback rules, Stage 3 method, exposure cap). When the two runs were priced by different versions of the engine, the change in the calculation is included here too.",
+  model = "The macro PD model itself: its variables, coefficients, TTC anchor and PDs, and how the variables combine. Zero when the model did not change.",
+  methodology = "How the ECL is calculated rather than with what: the ECL settings in model.yml (EAD fallback rules, Stage 3 method, exposure cap) and, when the prior run was priced by an earlier version of the engine, the change in the calculation itself. Shown only when it is not zero.",
   pd_curves = "Macro inputs and model together: one of the runs has no saved config, so the two cannot be told apart.",
   lgd = "Collateral, and so LGD, and the EIR.",
   overlay = "The post-model management overlay.",
@@ -348,7 +351,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             qdb_help(c(
               stats::setNames(as.list(unname(.BL_WHAT)), unname(.BL_LABEL[names(.BL_WHAT)])),
               list("Choosing a level" = "A contract belongs to a customer, account type, segment, stage or rating in each run by its value in that run, so the prior and current figures are each run's own. A contract that changed group is <b>Moved out</b> of the old one and <b>Moved in</b> to the new one, at its prior ECL; its causes then count in the new one.")),
-              note = "Each contract is repriced from the prior run to the current one a cause at a time, in the order shown, on each run's frozen config, so the steps sum exactly to the closing ECL. Macro variable change and Model change are told apart by pricing once more on PD curves built from the current run's macro inputs and the prior run's model. A prior run priced by an earlier version of the engine is first repriced on this one, and that difference is part of Model change. Unexplained appears only if the repricing leaves something over."),
+              note = "Each contract is repriced from the prior run to the current one a cause at a time, in the order shown, on each run's frozen config, so the steps sum exactly to the closing ECL. Macro variable change and Model change are told apart by pricing once more on PD curves built from the current run's macro inputs and the prior run's model. Model change is the PD model alone. The ECL settings in model.yml, and the difference when a prior run was priced by an earlier version of the engine (it is first repriced on this one), are Methodology change, shown only when not zero. Unexplained appears only if the repricing leaves something over."),
             radioButtons(ns("bl_level"), "Compare", choices = .BL_LEVELS, inline = TRUE,
                          selected = isolate(input$bl_level) %||% "book"),
             uiOutput(ns("bl_pick")),
@@ -917,18 +920,19 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         uiOutput(ns("bl_chart")),
         p(class = "small-muted", sprintf(
           "Each contract is repriced from the prior run to this one a cause at a time, in the order shown, so the bars sum exactly to the current ECL (residual %.2f).%s",
-          v$residual, if (isTRUE(ch$model_changed) || isTRUE(abs(v$steps$amount[v$steps$key == "method"]) >= 0.5)) ""
-                      else " Neither the model nor the calculation changed, so the model step is zero.")),
+          v$residual, if (isTRUE(ch$model_changed)) "" else " The PD model did not change, so Model change is zero.")),
         lapply(br$notes, function(n) div(class = "alert alert-info", style = "padding:0.5em 0.8em; margin:0.4em 0", n)),
         reactable::reactableOutput(ns("bl_steps")),
         tags$details(class = "qdb-help",
-          tags$summary(icon("sliders"), "What changed in the model and the macro inputs"),
+          tags$summary(icon("sliders"), "What changed in the model, the macro inputs and the ECL settings"),
           if (!isTRUE(ch$known)) p("A run has no frozen config, so this cannot be said.")
           else tagList(
-            p(tags$b("Model"), if (isTRUE(ch$model_changed)) " \u2014 changed" else " \u2014 unchanged"),
+            p(tags$b("PD model"), if (isTRUE(ch$model_changed)) " \u2014 changed" else " \u2014 unchanged"),
             chg_tbl(ch$model),
             p(tags$b("Macro inputs"), if (isTRUE(ch$macro_changed)) " \u2014 changed" else " \u2014 unchanged"),
-            chg_tbl(ch$macro))),
+            chg_tbl(ch$macro),
+            p(tags$b("ECL settings"), if (isTRUE(ch$settings_changed)) " \u2014 changed" else " \u2014 unchanged"),
+            chg_tbl(ch$settings))),
         h5(style = "margin-top:14px", "Contracts behind it"),
         p(class = "small-muted", "Largest moves first. Each row's causes sum to its change."),
         reactable::reactableOutput(ns("bl_contracts")),
