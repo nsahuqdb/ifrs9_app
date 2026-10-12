@@ -130,7 +130,6 @@
 #   key -> engine components it sums; .BL_ALWAYS: shown even when zero
 .BL_GROUPS <- list(
   derecognised = "derecognised", new_business = "new_business",
-  moved_out = "moved_out", moved_in = "moved_in",
   exposure = "exposure", stage = "stage", rating = "rating",
   macro = "macro", model = "model", methodology = c("settings", "method"),
   pd_curves = "pd_curves",
@@ -138,7 +137,6 @@
 .BL_ALWAYS <- c("derecognised", "new_business", "exposure", "stage", "rating",
                 "macro", "model", "lgd", "overlay")
 .BL_LABEL <- c(derecognised = "Derecognised", new_business = "New business",
-               moved_out = "Moved out", moved_in = "Moved in",
                exposure = "Exposure change", stage = "Stage migration",
                rating = "Rating migration", macro = "Macro variable change",
                model = "Model change", methodology = "Methodology change",
@@ -147,8 +145,6 @@
 .BL_WHAT <- c(
   derecognised = "In the prior run and not in this one, at its prior ECL.",
   new_business = "New in this run, at its ECL.",
-  moved_out = "Left this selection for another, at its prior ECL.",
-  moved_in = "Joined this selection from another, at its prior ECL; its own causes follow.",
   exposure = "Contracts in both runs: repayments, drawdowns and amortisation -- the balance, the EAD curve and the remaining term -- at the prior stage, rating, PD curves and LGD.",
   stage = "Between 12-month and lifetime ECL, or into Stage 3 (booked at the outstanding balance).",
   rating = "The new rating, on the prior run's PD curves.",
@@ -350,7 +346,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
               "Why the provision moved, for the whole book or for the customers, facilities, account types, segments, stages or ratings you choose: each run's figures side by side, then the waterfall between them."),
             qdb_help(c(
               stats::setNames(as.list(unname(.BL_WHAT)), unname(.BL_LABEL[names(.BL_WHAT)])),
-              list("Choosing a level" = "A contract belongs to a customer, account type, segment, stage or rating in each run by its value in that run, so the prior and current figures are each run's own. A contract that changed group is <b>Moved out</b> of the old one and <b>Moved in</b> to the new one, at its prior ECL; its causes then count in the new one.")),
+              list("Choosing a level" = "A contract counts in one group: the customer, facility, account type, segment, stage or rating it is in now, or, if it was derecognised, the one it left. So a stage's Prior ECL is what its current contracts had in the prior run, not the prior run's total for that stage: a contract that moved from Stage 1 to Stage 2 is in Stage 2, with its move under Stage migration. The groups add up to the whole book.")),
               note = "Each contract is repriced from the prior run to the current one a cause at a time, in the order shown, on each run's frozen config, so the steps sum exactly to the closing ECL. Macro variable change and Model change are told apart by pricing once more on PD curves built from the current run's macro inputs and the prior run's model. Model change is the PD model alone. The ECL settings in model.yml, and the difference when a prior run was priced by an earlier version of the engine (it is first repriced on this one), are Methodology change, shown only when not zero. Unexplained appears only if the repricing leaves something over."),
             radioButtons(ns("bl_level"), "Compare", choices = .BL_LEVELS, inline = TRUE,
                          selected = isolate(input$bl_level) %||% "book"),
@@ -816,10 +812,16 @@ mod_analytics_server <- function(id, runs_root = NULL) {
       lv <- bl_level(); m <- bl_members_tbl()
       if (lv == "book" || is.null(m)) return(NULL)
       if (nrow(m) == 0) return(.an_na("Nothing at this level in either run."))
-      selectizeInput(ns(.bl_pick_id(lv)), paste("Which", .BL_PLURAL[[lv]]),
-                     choices = NULL, multiple = TRUE, width = "100%",
-                     options = list(placeholder = "Type an id or a name \u2014 largest move first",
-                                    plugins = list("remove_button")))
+      nm <- tolower(names(.BL_LEVELS)[.BL_LEVELS == lv])
+      tagList(
+        p(class = "small-muted", sprintf(
+          "A contract counts in the %s it is in now (a derecognised one in the one it left), so Prior ECL is what these contracts had in the prior run%s",
+          nm, if (lv %in% c("stage", "rating", "segment", "account_type"))
+            sprintf(", not the prior run's total for that %s.", nm) else ".")),
+        selectizeInput(ns(.bl_pick_id(lv)), paste("Which", .BL_PLURAL[[lv]]),
+                       choices = NULL, multiple = TRUE, width = "100%",
+                       options = list(placeholder = "Type an id or a name \u2014 largest move first",
+                                      plugins = list("remove_button"))))
     })
     # The choices are sent as they are typed for (server = TRUE): a level can
     # hold thousands of customers or facilities.
