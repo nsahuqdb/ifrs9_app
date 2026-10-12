@@ -223,7 +223,8 @@ mod_run_trigger_server <- function(id) {
     #   the structural check and it passed).
     input_validation   <- reactiveVal(NULL)
     input_dq           <- reactiveVal(NULL)   # data-quality preview (advisory, non-gating)
-    input_header_strips <- reactiveVal(integer(0))  # auto-fixed repeated-header counts
+    input_header_strips <- reactiveVal(integer(0))  # rows removed on reading, per file
+    input_clean_detail  <- reactiveVal(list())      # the same, by kind
     input_dir_override <- reactiveVal(NULL)
     input_source_meta  <- reactiveVal(list(kind = "configured",
                                             details = list()))
@@ -509,6 +510,7 @@ mod_run_trigger_server <- function(id) {
             reset_header_strip_log()
             inputs <- read_all_inputs(resolved_dir, verbose = FALSE)
             input_header_strips(get_header_strip_log())
+            input_clean_detail(tryCatch(get_input_clean_log(), error = function(e) list()))
             static <- load_static_reference(static_dir)
             # Adopt the reporting date from the input data before validating,
             # so a stale config date never trips the consistency check.
@@ -534,6 +536,7 @@ mod_run_trigger_server <- function(id) {
       } else {
         input_dq(NULL)
         input_header_strips(integer(0))
+        input_clean_detail(list())
       }
     })
 
@@ -605,21 +608,23 @@ mod_run_trigger_server <- function(id) {
     output$input_dq_result <- renderUI({
       v <- input_dq()
       strips <- input_header_strips()
-      # Informational note about auto-fixed repeated header rows.
+      # What the reader removed: rows that are not data, so not findings.
       strip_block <- NULL
       if (length(strips) > 0 && sum(strips) > 0) {
         total <- sum(strips)
-        per_file <- paste(sprintf("%s (%d)", names(strips), as.integer(strips)),
-                          collapse = ", ")
+        what <- tryCatch(describe_input_clean_log(input_clean_detail()),
+                         error = function(e) "")
+        if (!nzchar(what))
+          what <- paste(sprintf("%s: %d row(s)", names(strips), as.integer(strips)),
+                        collapse = "; ")
         strip_block <- div(style = "margin-top:1em;",
-          HTML(sprintf('<span class="pill pill-pass">Auto-fixed: removed %d repeated header row(s)</span>',
+          HTML(sprintf('<span class="pill pill-pass">Cleaned automatically: %d row(s) removed</span>',
                        total)),
           p(class = "small-muted", style = "margin-top:0.4em;",
-            sprintf("Repeated header rows were detected and removed from: %s. ",
-                    per_file),
-            "These recur at whatever interval the source export uses (e.g. ",
-            "every 10,000 or 50,000 rows) and are stripped automatically ",
-            "before validation."))
+            sprintf("Removed before checking: %s. ", what),
+            "Repeated headers, the row-count trailer, blank rows, a total line ",
+            "at the end and exact duplicate rows are not data, so they are not ",
+            "findings. Two rows with the same id that differ are not removed."))
       }
       if (is.null(v) || nrow(v) == 0) return(strip_block)
       passed <- as.logical(v$passed)
