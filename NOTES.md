@@ -3,6 +3,47 @@
 Notes on deferred methodology questions, known divergences from V4,
 and design decisions worth revisiting.
 
+## One set of ECL functions; Compare two runs simplified  (2026-10)
+
+The engine (ifrs9qdb 1.1.0) now prices everything -- the report, the ECL
+bridge, every stress lever, what-if rules, the roll forward, the macro path,
+single-run scenario repricing -- with build_ecl_context(), ecl_frame() and
+compute_ecl(), the functions the run itself prices with. The second answers
+to "why did it move" are gone from the engine: ecl_walk(), ecl_walk_detail(),
+flow_profile(), movement_by(), stage_transitions() and the factor
+attribution. See the engine's NEWS.md for what that changed in the figures
+(a doubled investment position in the repricers, the exposure lever on
+supplied schedules, the roll forward, single-run scenarios).
+
+Compare two runs is two tabs:
+
+  Movement    unchanged: the bridge, by level, with the contracts behind it
+              and every group of the level (By segment for the book).
+  Migration   who moved stage and rating, counted as customers: the stage
+              heatmap, the rating direction, the customers whose stage
+              changed (what they carry now), the rating matrix, on the
+              rating scale chosen.
+
+What-if reweighting and Sensitivity reprice too: the PD curves are rebuilt
+with the weights entered and every contract priced with compute_ecl()
+(scenario_weights_stress(), scenario_weights_sensitivity()). They were a
+weighted sum of the five scenario provisions, which is not what a run books
+(the external scale is weighted year by year from GCC growth; the exposure
+cap is not linear): 0.5m to 0.6m off the booked figure even at the run's own
+weights. The inputs start at the weights the run is priced with
+(run_scenario_weights()), not the config file's explicit_weights -- not used
+on an automatic mode, and in configs written before the V2 weighting (the 2025
+reference runs) a snapshot with the downturn and uptrend weights the other way
+round. The macro path's "Set them myself" starts there too. Sensitivity runs on a button: five repricings,
+about a minute.
+
+Removed: Attribution (the factor attribution and movement by group),
+Segments (Movement's By segment is the same table, priced), Staging movement
+(merged into Migration, without the Stage 2 trigger mix -- the Staging tab
+of each run shows its triggers), Flows (New business and Derecognised are
+bars of the waterfall, and each contract's Status says which), and the
+KPI row above the tabs (Movement opens with the two runs side by side).
+
 ## Dates, unreadable values and the allocation unit  (2026-09)
 
 Decisions taken with the engine (see its NEWS.md and PRICING_READINESS.md):

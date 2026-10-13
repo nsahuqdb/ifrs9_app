@@ -5,7 +5,11 @@
 #
 #   Single run    Overview | PD | LGD & collateral | Exposure & maturity |
 #                 Concentration | Data quality
-#   Compare runs  Movement | Risk migration | Attribution | Flows | ...
+#   Compare runs  Movement | Migration
+#
+# Movement is ecl_bridge(): every contract repriced with compute_ecl(), the
+# function the pipeline prices with, a cause at a time. The stress tabs reprice
+# with the same function, so no tab has an ECL calculation of its own.
 #
 # All computation lives in the ifrs9qdb package (pure functions, no Shiny).
 # This module only selects runs, loads reports and renders. Charts use
@@ -297,27 +301,13 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     rep_b <- reactive({ bump(); .report_for(input$run_b) })
     dat_a <- reactive({ a <- rep_a(); if (is.null(a)) NULL else a$data })
     dat_b <- reactive({ b <- rep_b(); if (is.null(b)) NULL else b$data })
-    walk_r <- reactive({
-      a <- dat_a(); b <- dat_b()
-      if (is.null(a) || is.null(b)) return(NULL)
-      ecl_walk(a, b)
-    })
 
     # ------------------------------------------------------------ KPIs -----
     output$kpis <- renderUI({
+      # Compare two runs has no row of its own: Movement opens with the two
+      # runs side by side and the movement for what is selected.
       if (identical(input$mode, "compare")) {
-        w <- walk_r(); if (is.null(w)) return(NULL)
-        chg <- w$closing - w$opening
-        qdb_stats(list(
-          list(k = "Opening ECL", v = .an_money(w$opening), tone = ""),
-          list(k = "Closing ECL", v = .an_money(w$closing), tone = "accent"),
-          list(k = "Movement", v = .an_money(chg), tone = if (chg > 0) "err" else "ok"),
-          list(k = "% change", v = sprintf("%+.2f%%", 100 * chg / max(w$opening, 1)),
-               tone = if (chg > 0) "err" else "ok"),
-          list(k = "Stage migrated", v = .an_money(w$counts$migrated), tone = "warn"),
-          list(k = "New / left",
-               v = sprintf("%s / %s", .an_money(w$counts$arrived), .an_money(w$counts$left)),
-               tone = "")))
+        return(NULL)
       } else {
         d <- dat_a(); if (is.null(d)) return(NULL)
         e <- sum(d$exposure); l <- sum(d$ecl)
@@ -352,78 +342,24 @@ mod_analytics_server <- function(id, runs_root = NULL) {
                          selected = isolate(input$bl_level) %||% "book"),
             uiOutput(ns("bl_pick")),
             uiOutput(ns("bl_body"))),
-          nav_panel("Risk migration",
-            fluidRow(column(4, uiOutput(ns("pick_rt2")))),
-            p(class = "small-muted", "Customer counts, ratings ordered best first."),
+          nav_panel("Migration",
+            p(class = "small-muted", style = "margin-top:8px",
+              "Who moved, on stage and on rating, counted as customers because both are set per customer. What each move cost, and which contracts carried it, is on Movement (Stage migration and Rating migration)."),
             qdb_help(list(
               "Stage migration" = "Customers moving between IFRS 9 stages, counted as customers because staging is set per customer.",
+              "Deterioration" = "Customers moving to a worse stage (1&rarr;2, 2&rarr;3).",
+              "Improvement" = "Customers moving to a better stage, normally a cure.",
               "Rating migration" = "Customers moving between rating grades, ordered along the scale's own hierarchy (best first).",
               "Upgrade / Downgrade" = "Decided by hierarchy rank, not alphabetically \u2014 a downgrade is a move to a worse grade.",
               "Rating scale" = "Internal (QDB grades) for Business Finance, Off BS, Al Dhameen and Tasdeer; external (agency grades) for Investments and Banks. Both reuse hierarchy 1&ndash;21, so they are never mixed."),
               note = "Each cell shows the number of customers making that move."),
-
+            fluidRow(column(4, uiOutput(ns("pick_rt2")))),
             fluidRow(
               column(7, h5("Stage migration (customers)"), uiOutput(ns("c_ctrans"))),
               column(5, h5("Rating direction"), uiOutput(ns("c_migsum")))),
-            hr(), h5("Rating migration matrix"), uiOutput(ns("c_ratmig"))),
-          nav_panel("Attribution",
-            fluidRow(column(4, selectInput(ns("attr_by"), "Group by",
-              choices = c("Portfolio" = "portfolio", "Stage" = "stage",
-                          "Rating" = "rating"), width = "100%"))),
-            uiOutput(ns("c_move")),
-            reactable::reactableOutput(ns("t_attr")),
-            hr(),
-            h5("EAD / PD / LGD / horizon attribution"),
-            p(class = "small-muted",
-              "One factor substituted at a time; the effects sum to the movement."),
-            qdb_help(list(
-              "Movement by segment" = "Change in ECL for each portfolio, stage or rating between the two runs.",
-              "Horizon" = "Effect of time passing \u2014 contracts moving closer to maturity, so fewer months of loss remain.",
-              "EAD" = "Effect of the exposure-at-default curve changing.",
-              "PD" = "Effect of the probability-of-default term structure changing (rating moves and model updates).",
-              "LGD" = "Effect of loss-given-default changing, mostly collateral.",
-              "Not attributable" = "Contracts lacking a PD or EAD curve in one of the runs. Reported separately rather than spread across the factors."),
-              note = "The four factors are found by re-running the ECL formula on each run's own inputs and substituting ONE factor at a time, in the order horizon, EAD, PD, LGD. They sum exactly to the movement on the contracts covered."),
-
-            uiOutput(ns("c_factor")),
-            uiOutput(ns("t_factor_note"))),
-          nav_panel("Segments",
-            p(class = "small-muted", style = "margin-top:8px",
-              "Exposure and coverage before and after, by segment."),
-            qdb_help(list(
-              "Exposure before / after" = "On-balance exposure in each run.",
-              "ECL coverage" = "ECL divided by exposure, shown for both runs so a change in provisioning is separable from a change in size.",
-              "ECL change" = "Closing ECL minus opening ECL for that segment."),
-              note = "A segment can grow while its coverage falls, or shrink while its coverage rises \u2014 showing both makes which one happened obvious."),
-
-            fluidRow(column(4, selectInput(ns("seg_by"), "Group by",
-              choices = c("Portfolio" = "portfolio", "Stage" = "stage",
-                          "Rating" = "rating", "Account type" = "account_type"),
-              width = "100%"))),
-            reactable::reactableOutput(ns("t_seg"))),
-          nav_panel("Staging movement",
-            p(class = "small-muted", style = "margin-top:8px",
-              "Customers whose stage changed, and what it cost."),
-            qdb_help(list(
-              "Deterioration" = "Customers moving to a worse stage (1&rarr;2, 2&rarr;3).",
-              "Improvement" = "Customers moving to a better stage, normally a cure.",
-              "ECL now" = "The provision those customers carry in the current run.",
-              "Trigger mix" = "Why Stage 2 customers are in Stage 2, in both runs, so a shift in the reason is visible."),
-              note = "Counted as customers: staging is a customer-level decision."),
-
+            h5(style = "margin-top:14px", "Customers whose stage changed"),
             reactable::reactableOutput(ns("t_stagemove")),
-            hr(), h5("Stage 2 trigger mix, both runs"),
-            reactable::reactableOutput(ns("t_trigdelta"))),
-          nav_panel("Flows",
-            qdb_help(list(
-              "New business" = "Contracts present in the current run but not the prior one.",
-              "Derecognised" = "Contracts present before but not now \u2014 repaid, closed or written off.",
-              "ECL coverage" = "Provision as a percentage of exposure for that flow, which shows whether new lending is riskier or safer than what left."),
-              note = NULL),
-            h5("What came on and off the book"),
-            reactable::reactableOutput(ns("t_flow")),
-            hr(), h5("Largest movements by contract"),
-            reactable::reactableOutput(ns("t_movers"))))
+            hr(), h5("Rating migration matrix"), uiOutput(ns("c_ratmig"))))
       } else if (identical(input$mode, "scenario")) {
         se <- scen_source()
         if (is.null(se) || isFALSE(se$ok))
@@ -603,25 +539,27 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             uiOutput(ns("c_scen")), reactable::reactableOutput(ns("t_scen"))),
           nav_panel("What-if reweighting",
             p(class = "small-muted", style = "margin-top:8px",
-              "Set the weights; the provision is the weighted sum of the scenario provisions."),
+              "Set the scenario weights and reprice: the PD curves are rebuilt with them and every contract priced with the engine's own ECL function."),
             qdb_help(list(
-              "Weight" = "Probability assigned to each scenario. They are normalised to 100%.",
-              "Scenario ECL" = "The provision if that scenario were certain.",
-              "Contribution" = "Weight multiplied by that scenario's provision.",
-              "Provision at these weights" = "The sum of the contributions."),
-              note = "ECL is linear in the marginal PDs, so the provision under any weighting is exactly the weighted sum of the per-scenario provisions \u2014 no re-run is needed."),
+              "Weight" = "Probability assigned to each scenario on the internal scale (the QDB grades). They are normalised to 100%.",
+              "This run's weights" = "What the engine works out from the run's frozen config and prices with \u2014 not the config file's explicit weights, which on an automatic mode are a rounded snapshot.",
+              "External scale" = "Investments and Banks & FIs keep their own weights, which follow GCC growth year by year.",
+              "At these weights" = "The book repriced on PD curves rebuilt with the weights entered."),
+              note = "Not a weighted sum of the five scenario provisions: the external scale is weighted year by year and the exposure cap is not linear, so a weighted sum is not what the run would book. At the run's own weights this gives the booked figure exactly."),
 
             uiOutput(ns("scen_sliders")),
             uiOutput(ns("t_whatif"))),
           nav_panel("Sensitivity",
             p(class = "small-muted", style = "margin-top:8px",
-              "Each row adds 10pp to one scenario, taken from the others in proportion."),
+              "Each row adds 10pp to one scenario, taken from the others in proportion, and reprices the book."),
             qdb_help(list(
-              "Weight before / after" = "Each row adds 10 percentage points to one scenario and removes the same 10pp from the others in proportion, so the five still total 100%.",
-              "Provision after" = "Recomputed as the weighted sum of the per-scenario provisions.",
+              "Weight before / after" = "Each row adds 10 percentage points to one scenario and removes the same 10pp from the others in proportion, so the five still total 100%. From the weights on What-if reweighting.",
+              "Provision after" = "The book repriced on PD curves rebuilt with the shifted weights.",
               "Change" = "Provision after minus provision before."),
-              note = "The scenario with the largest change is the one the provision is most exposed to."),
-
+              note = "The scenario with the largest change is the one the provision is most exposed to. Five repricings, so it takes a minute."),
+            div(style = "margin:8px 0 12px",
+              actionButton(ns("sens_run"), "Move ten points onto each scenario",
+                           icon = icon("play"), class = "btn-sm btn-primary")),
             uiOutput(ns("c_sens")), reactable::reactableOutput(ns("t_sens"))))
       } else {
         d <- dat_a()
@@ -1082,61 +1020,6 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         echarts4r::e_grid(left = 95, right = 30, bottom = 95, top = 15)
     })
 
-    output$c_move <- renderUI({
-      m <- movement_by(dat_a(), dat_b(), input$attr_by %||% "portfolio")
-      if (is.null(m) || nrow(m) == 0) return(NULL)
-      m <- utils::head(m, 12); m <- m[order(m$change), , drop = FALSE]
-      if (!.an_echarts())
-        return(qdb_reactable(data.frame(Group = m$group, Change = .an_money(m$change)),
-                             searchable = FALSE, page_size = 12))
-      cj <- htmlwidgets::JS(sprintf("function(p){var c=[%s]; return c[p.dataIndex];}",
-        paste0("'", ifelse(m$change >= 0, .AN_COL$err, .AN_COL$ok), "'", collapse = ",")))
-      echarts4r::e_charts(m, group) |>
-        echarts4r::e_bar(change, legend = FALSE, bar_width = "60%",
-                         itemStyle = list(color = cj)) |>
-        echarts4r::e_flip_coords() |>
-        echarts4r::e_x_axis(axisLabel = list(formatter = .an_m_axis())) |>
-        echarts4r::e_tooltip() |>
-        echarts4r::e_grid(left = 140, right = 30, top = 10, bottom = 30)
-    })
-
-    output$c_factor <- renderUI({
-      fa <- factor_attribution_exact(inp_a(), dat_a(), inp_b(), dat_b())
-      if (is.null(fa))
-        return(.an_na(factor_attribution_diagnosis(inp_a(), dat_a(), inp_b(), dat_b())))
-      e <- fa$effects
-      if (!.an_echarts())
-        return(qdb_reactable(data.frame(Factor = e$factor, Effect = .an_money(e$effect)),
-                             searchable = FALSE))
-      cj <- htmlwidgets::JS(sprintf("function(p){var c=[%s]; return c[p.dataIndex];}",
-        paste0("'", ifelse(e$effect >= 0, .AN_COL$err, .AN_COL$ok), "'", collapse = ",")))
-      echarts4r::e_charts(e, factor) |>
-        echarts4r::e_bar(effect, legend = FALSE, bar_width = "45%",
-                         itemStyle = list(color = cj)) |>
-        echarts4r::e_y_axis(axisLabel = list(formatter = .an_m_axis())) |>
-        echarts4r::e_tooltip() |>
-        echarts4r::e_grid(left = 80, right = 25, top = 15, bottom = 35)
-    })
-
-    output$t_factor_note <- renderUI({
-      fa <- factor_attribution_exact(inp_a(), dat_a(), inp_b(), dat_b())
-      if (is.null(fa)) return(NULL)
-      e <- fa$effects
-      df <- data.frame(Factor = c(e$factor, "Sum of effects", "Not attributable"),
-                       Effect = c(e$effect, sum(e$effect), fa$uncovered),
-                       check.names = FALSE)
-      tagList(
-        qdb_reactable(data.frame(Factor = df$Factor, Effect = .an_money(df$Effect)),
-                      searchable = FALSE, page_size = 6),
-        p(class = "small-muted",
-          sprintf(paste("Attributed on %s of %s common contracts (those with both a PD",
-                        "curve and an EAD curve in each run); the rest is shown as not",
-                        "attributable rather than spread across the factors.",
-                        "Recomputation residual %s. Substitution order: horizon, EAD, PD, LGD."),
-                  .an_money(fa$covered), .an_money(fa$contracts),
-                  format(round(fa$residual, 2), big.mark = ","))))
-    })
-
     output$c_stage <- renderUI({
       p <- run_profile(dat_a(), "stage"); if (is.null(p)) return(NULL)
       p$group <- paste("Stage", p$group)
@@ -1404,12 +1287,14 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     scen_ecl <- reactive({ se <- scen_source(); if (isTRUE(se$ok)) se$ecl else NULL })
     scen_sev <- reactive({ scenario_severity(.out_dir_for(input$run_a)) })
 
-    cfg_weights <- reactive({
-      d <- .out_dir_for(input$run_a)
-      cu <- if (is.null(d)) NULL else an_config_used(d)
-      p <- if (!is.null(cu)) file.path(cu$config, "model_inputs.yml") else
-           file.path(getOption("ifrs9.project_root", getwd()), "config", "model_inputs.yml")
-      scenario_weights(p)
+    # The internal weights the run is priced with, as the engine resolves them
+    # from its frozen config -- not the config file's explicit_weights, which
+    # on an automatic mode are a rounded snapshot.
+    run_weights <- reactive({
+      bump()
+      d <- .out_dir_for(input$run_a); if (is.null(d)) return(NULL)
+      rw <- run_scenario_weights(d)
+      if (isTRUE(rw$ok)) unlist(rw$internal) else NULL
     })
 
     output$scen_origin <- renderUI({
@@ -1482,102 +1367,102 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     })
 
     output$scen_sliders <- renderUI({
-      e <- scen_ecl(); if (is.null(e)) return(NULL)
-      w <- cfg_weights()
-      def <- function(s) {
-        if (!is.null(w) && s %in% w$scenario) {
-          v <- w$internal[w$scenario == s][1]
-          if (!is.na(v)) return(round(100 * v, 2))
-        }
-        round(100 / length(e), 2)
-      }
+      w <- run_weights()
+      if (is.null(w)) return(.an_na("This run's scenario weights could not be resolved from its frozen config."))
       tagList(
-        fluidRow(lapply(names(e), function(s)
+        fluidRow(lapply(names(w), function(s)
           column(2, numericInput(ns(paste0("w_", make.names(s))), s,
-                                 value = def(s), min = 0, max = 100, step = 0.5,
-                                 width = "100%")))),
+                                 value = round(100 * w[[s]], 2), min = 0, max = 100,
+                                 step = 0.5, width = "100%")))),
         div(style = "margin-bottom:8px",
-          actionButton(ns("w_reset"), "Reset to config weights",
-                       class = "btn-sm btn-outline-secondary", icon = icon("rotate-left"))))
+          actionButton(ns("w_run"), "Reprice at these weights", icon = icon("play"),
+                       class = "btn-sm btn-primary"),
+          actionButton(ns("w_reset"), "Reset to this run's weights",
+                       class = "btn-sm btn-outline-secondary", icon = icon("rotate-left"),
+                       style = "margin-left:8px")))
     })
 
     observeEvent(input$w_reset, {
-      e <- scen_ecl(); w <- cfg_weights()
-      if (is.null(e)) return()
-      for (s in names(e)) {
-        v <- if (!is.null(w) && s %in% w$scenario) w$internal[w$scenario == s][1] else NA
-        if (length(v) != 1) v <- NA
-        updateNumericInput(session, paste0("w_", make.names(s)),
-                           value = if (is.na(v)) round(100 / length(e), 2) else round(100 * v, 2))
-      }
+      w <- run_weights(); if (is.null(w)) return()
+      for (s in names(w))
+        updateNumericInput(session, paste0("w_", make.names(s)), value = round(100 * w[[s]], 2))
     })
 
+    # The weights entered, in percent. An input left at its (rounded) starting
+    # value, or not drawn yet (Sensitivity opened first), is the run's own
+    # weight exactly, so the run's own weights reprice to the booked figure.
     user_weights <- reactive({
-      e <- scen_ecl(); if (is.null(e)) return(NULL)
-      cw <- cfg_weights()
-      # The weight inputs only exist once the reweighting tab has rendered its
-      # sliders. Opening Sensitivity first would otherwise give every scenario a
-      # weight of zero and show nothing. Fall back to the config weights, then
-      # to an equal split, so the tab stands on its own.
-      fallback <- function(s) {
-        if (!is.null(cw) && s %in% cw$scenario) {
-          v <- cw$internal[cw$scenario == s][1]
-          if (length(v) == 1 && !is.na(v)) return(100 * v)
-        }
-        100 / length(e)
-      }
-      w <- vapply(names(e), function(s) {
+      w <- run_weights(); if (is.null(w)) return(NULL)
+      out <- vapply(names(w), function(s) {
         v <- suppressWarnings(as.numeric(input[[paste0("w_", make.names(s))]]))
-        if (length(v) != 1 || is.na(v)) fallback(s) else v
+        if (length(v) != 1 || is.na(v) || isTRUE(all.equal(v, round(100 * w[[s]], 2))))
+          100 * w[[s]] else v
       }, numeric(1))
-      names(w) <- names(e)
-      w
+      names(out) <- names(w)
+      out
     })
+
+    .reweight <- function(w) {
+      i <- inp_a(); d <- dat_a(); od <- .out_dir_for(input$run_a)
+      if (is.null(i) || isFALSE(i$ok) || is.null(d) || is.null(od)) return(NULL)
+      scenario_weights_stress(i, d, od, w / sum(w))
+    }
+    whatif_r <- eventReactive(input$w_run, {
+      w <- user_weights(); if (is.null(w) || sum(w) <= 0) return(NULL)
+      list(weights = w, r = withProgress(
+        message = "Rebuilding the PD curves and repricing the book\u2026", value = 0.5,
+        .reweight(w)))
+    }, ignoreInit = TRUE)
+    sens_r <- eventReactive(input$sens_run, {
+      w <- user_weights(); i <- inp_a(); d <- dat_a(); od <- .out_dir_for(input$run_a)
+      if (is.null(w) || sum(w) <= 0 || is.null(i) || is.null(d) || is.null(od)) return(NULL)
+      withProgress(message = "Repricing the book once per scenario\u2026", value = 0.3,
+        scenario_weights_sensitivity(i, d, od, weights = w / sum(w)))
+    }, ignoreInit = TRUE)
 
     output$t_whatif <- renderUI({
-      se <- scen_source()
-      e <- scen_ecl(); w <- user_weights()
-      if (is.null(e) || is.null(w)) return(NULL)
-      r <- scenario_reweight(e, w)
-      if (is.null(r)) return(div(class = "alert alert-warning",
-        "Weights must sum to more than zero."))
-      cw <- cfg_weights()
-      base <- if (!is.null(cw)) {
-        bw <- stats::setNames(cw$internal, cw$scenario)
-        scenario_reweight(e, bw[!is.na(bw)])
-      } else NULL
-      raw_sum <- sum(w)
-      diff <- if (!is.null(base)) r$total - base$total else NA_real_
+      x <- whatif_r()
+      if (is.null(x)) return(p(class = "small-muted",
+        "Set the weights and press Reprice. At this run's own weights the result is the booked figure."))
+      r <- x$r
+      if (inherits(r, "stress_error"))
+        return(div(class = "alert alert-warning", attr(r, "msg")))
+      if (is.null(r)) return(.an_na("The run's engine inputs could not be read."))
+      raw_sum <- sum(x$weights)
+      tone <- if (r$delta > 0) "err" else if (r$delta < 0) "ok" else ""
+      by <- r$by_portfolio
       tagList(
         qdb_stats(list(
-          list(k = "Provision at these weights", v = .an_money(r$total), tone = "accent"),
-          list(k = "At config weights",
-               v = if (is.null(base)) "\u2014" else .an_money(base$total), tone = ""),
-          list(k = "Weighted (as reported)",
-               v = if (is.null(se$weighted) || is.na(se$weighted)) "\u2014"
-                   else .an_money(se$weighted), tone = ""),
-          list(k = "Difference", v = if (is.na(diff)) "\u2014" else .an_money(diff),
-               tone = if (!is.na(diff) && diff > 0) "err" else "ok"),
+          list(k = "This run", v = .an_money(r$before), tone = ""),
+          list(k = "At these weights", v = .an_money(r$after), tone = "accent"),
+          list(k = "Difference", v = .an_signed(r$delta), tone = tone),
+          list(k = "vs this run", v = if (r$before != 0) .an_pct(100 * r$delta / r$before) else "\u2014",
+               tone = tone),
           list(k = "Weights entered", v = sprintf("%.2f%%", raw_sum),
                tone = if (abs(raw_sum - 100) > 0.01) "warn" else "ok"))),
         if (abs(raw_sum - 100) > 0.01)
           div(class = "alert alert-info",
               sprintf("Weights total %.2f%%; they have been normalised to 100%% for the calculation.",
                       raw_sum)) else NULL,
+        if (!is.null(r$note)) div(class = "alert alert-info", r$note) else NULL,
         qdb_reactable(
-          data.frame(Scenario = names(r$normalised_weights),
-                     `Weight used` = sprintf("%.2f%%", 100 * as.numeric(r$normalised_weights)),
-                     `Scenario ECL` = .an_money(e[names(r$normalised_weights)]),
-                     Contribution = .an_money(e[names(r$normalised_weights)] *
-                                              as.numeric(r$normalised_weights)),
+          data.frame(Scenario = names(x$weights),
+                     `Weight used` = sprintf("%.2f%%", 100 * x$weights / raw_sum),
+                     `This run` = sprintf("%.2f%%", 100 * unname(run_weights()[names(x$weights)])),
                      check.names = FALSE),
-          searchable = FALSE, page_size = 8))
+          searchable = FALSE, page_size = 8),
+        if (!is.null(by) && nrow(by) > 0) tagList(h5(style = "margin-top:12px", "By portfolio"),
+          qdb_reactable(data.frame(Portfolio = by$portfolio, Contracts = by$contracts,
+                                   `This run` = .an_money(by$before),
+                                   `At these weights` = .an_money(by$after),
+                                   Change = .an_signed(by$change), check.names = FALSE),
+                        searchable = FALSE, page_size = 10)) else NULL)
     })
 
     output$c_sens <- renderUI({
-      e <- scen_ecl(); w <- user_weights()
-      if (is.null(e) || is.null(w)) return(NULL)
-      sv <- scenario_sensitivity(e, w); if (is.null(sv)) return(.an_na())
+      sv <- sens_r()
+      if (is.null(sv)) return(p(class = "small-muted",
+        "Press the button to reprice the book with ten points moved onto each scenario in turn."))
       if (!.an_echarts())
         return(qdb_reactable(data.frame(Scenario = sv$scenario,
                  Change = .an_money(sv$change)), searchable = FALSE))
@@ -1594,9 +1479,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     })
 
     output$t_sens <- reactable::renderReactable({
-      e <- scen_ecl(); w <- user_weights()
-      if (is.null(e) || is.null(w)) return(NULL)
-      sv <- scenario_sensitivity(e, w); if (is.null(sv)) return(NULL)
+      sv <- sens_r(); if (is.null(sv)) return(NULL)
       df <- data.frame(Scenario = sv$scenario,
                        `Weight before` = 100 * sv$weight_before,
                        `Weight after` = 100 * sv$weight_after,
@@ -1673,16 +1556,10 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     })
 
     output$mev_wcustom <- renderUI({
-      w <- cfg_weights()
-      sc <- if (!is.null(w)) w$scenario else names(scen_ecl() %||% character(0))
+      w <- run_weights()
+      sc <- names(w)
       if (length(sc) == 0) return(.an_na("Scenario weights could not be read for this run."))
-      def <- function(s2) {
-        if (!is.null(w) && s2 %in% w$scenario) {
-          v <- w$internal[w$scenario == s2][1]
-          if (length(v) == 1 && !is.na(v)) return(round(100 * v, 2))
-        }
-        round(100 / length(sc), 2)
-      }
+      def <- function(s2) round(100 * w[[s2]], 2)
       tagList(
         fluidRow(lapply(sc, function(s2)
           column(2, numericInput(ns(paste0("mevw_", make.names(s2))), s2,
@@ -1707,8 +1584,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
       wm <- input$mev_wmode %||% "auto"
       wts <- NULL
       if (identical(wm, "custom")) {
-        w <- cfg_weights()
-        sc <- if (!is.null(w)) w$scenario else names(scen_ecl() %||% character(0))
+        sc <- names(run_weights())
         wts <- stats::setNames(vapply(sc, function(s2) {
           v <- suppressWarnings(as.numeric(input[[paste0("mevw_", make.names(s2))]]))
           if (length(v) != 1 || is.na(v)) 0 else v
@@ -2353,7 +2229,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
                                      fontWeight = "600"))))
     }
 
-    # Generic contract-level drill (walk steps, data-quality findings).
+    # Generic contract-level drill (data-quality findings).
     .drill_contracts <- function(df, page = 8) {
       if (is.null(df) || nrow(df) == 0)
         return(div(class = "small-muted", style = "padding:8px 12px", "No contracts."))
@@ -2609,37 +2485,14 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         conflicts, unpriced, by_cust, by_seg)
     })
 
-    # ---- new comparison tables ---------------------------------------------
-    output$t_seg <- reactable::renderReactable({
-      a <- dat_a(); b <- dat_b(); if (is.null(a) || is.null(b)) return(NULL)
-      by <- input$seg_by %||% "portfolio"
-      pa <- run_profile(a, by); pb <- run_profile(b, by)
-      if (is.null(pa) || is.null(pb)) return(NULL)
-      m <- merge(pa, pb, by = "group", all = TRUE, suffixes = c("_a", "_b"))
-      for (cc in c("exposure_a","exposure_b","ecl_a","ecl_b","contracts_a","contracts_b"))
-        m[[cc]][is.na(m[[cc]])] <- 0
-      m$d_ecl <- m$ecl_b - m$ecl_a
-      m$d_exp <- m$exposure_b - m$exposure_a
-      m <- m[order(-abs(m$d_ecl)), , drop = FALSE]
-      df <- data.frame(Group = m$group,
-                       `Exposure before` = m$exposure_a, `Exposure after` = m$exposure_b,
-                       `Exposure change` = m$d_exp,
-                       `Coverage before` = m$coverage_a, `Coverage after` = m$coverage_b,
-                       `ECL change` = m$d_ecl, check.names = FALSE)
-      .rt(df, defaultPageSize = 12, columns = list(
-        `Exposure before` = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-        `Exposure after` = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-        `Exposure change` = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-        `Coverage before` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v)),
-        `Coverage after` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v)),
-        `ECL change` = reactable::colDef(align = "right", cell = function(v) .an_money(v),
-          style = function(v) list(color = if (v >= 0) .AN_COL$err else .AN_COL$ok,
-                                   fontWeight = "600"))))
-    })
-
+    # ---- migration ----------------------------------------------------------
     output$t_stagemove <- reactable::renderReactable({
       a <- dat_a(); b <- dat_b(); if (is.null(a) || is.null(b)) return(NULL)
-      cm <- customer_stage_migration(a, b); if (is.null(cm)) return(NULL)
+      # on the rating scale chosen, as the heatmap beside it
+      ia <- inp_b() %||% inp_a(); rt <- input$rating_type2 %||% "1"
+      cm <- customer_stage_migration(an_filter_rating_type(a, ia, rt),
+                                     an_filter_rating_type(b, ia, rt))
+      if (is.null(cm)) return(NULL)
       cm <- cm[cm$from != cm$to, , drop = FALSE]
       if (nrow(cm) == 0) return(reactable::reactable(
         data.frame(Result = "No customer changed stage between these runs."),
@@ -2656,28 +2509,6 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             if (identical(v, "Deterioration")) "qp-err" else "qp-ok"), v), minWidth = 120),
         `Exposure now` = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
         `ECL now` = reactable::colDef(align = "right", cell = function(v) .an_money(v))))
-    })
-
-    output$t_trigdelta <- reactable::renderReactable({
-      a <- dat_a(); b <- dat_b(); if (is.null(a) || is.null(b)) return(NULL)
-      thr <- .thr()
-      ta <- stage2_triggers(a, thr); tb <- stage2_triggers(b, thr)
-      if (is.null(ta) || is.null(tb)) return(NULL)
-      ta <- ta[ta$basis == "any", , drop = FALSE]
-      tb <- tb[tb$basis == "any", , drop = FALSE]
-      m <- merge(ta[, c("trigger","customers","ecl")],
-                 tb[, c("trigger","customers","ecl")],
-                 by = "trigger", all = TRUE, suffixes = c("_a","_b"))
-      for (cc in c("customers_a","customers_b","ecl_a","ecl_b")) m[[cc]][is.na(m[[cc]])] <- 0
-      df <- data.frame(Trigger = m$trigger,
-                       `Customers before` = m$customers_a, `Customers after` = m$customers_b,
-                       Change = m$customers_b - m$customers_a,
-                       `ECL after` = m$ecl_b, check.names = FALSE)
-      .rt(df, sortable = FALSE, pagination = FALSE, columns = list(
-        Change = reactable::colDef(align = "right",
-          style = function(v) list(color = if (v >= 0) .AN_COL$err else .AN_COL$ok,
-                                   fontWeight = "600")),
-        `ECL after` = reactable::colDef(align = "right", cell = function(v) .an_money(v))))
     })
 
     # ---- rating scale -------------------------------------------------------
@@ -2929,59 +2760,6 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     # ---------------------------------------------------------- tables -----
     .rt <- function(df, ...) reactable::reactable(df, class = "qdb-rt", compact = TRUE, ...)
 
-    output$t_attr <- reactable::renderReactable({
-      m <- movement_by(dat_a(), dat_b(), input$attr_by %||% "portfolio")
-      if (is.null(m)) return(NULL)
-      df <- data.frame(Group = m$group, Opening = m$ecl_prev, Closing = m$ecl_curr,
-                       Change = m$change, `%` = m$pct, check.names = FALSE)
-      .rt(df, defaultPageSize = 12, columns = list(
-        Opening = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-        Closing = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-        Change = reactable::colDef(align = "right", cell = function(v) .an_money(v),
-          style = function(v) list(color = if (v >= 0) .AN_COL$err else .AN_COL$ok,
-                                   fontWeight = "600")),
-        `%` = reactable::colDef(align = "right",
-          cell = function(v) if (is.na(v)) "\u2014" else .an_pct(v))))
-    })
-
-
-    output$t_flow <- reactable::renderReactable({
-      f <- flow_profile(dat_a(), dat_b()); if (is.null(f)) return(NULL)
-      df <- data.frame(Flow = f$flow, Contracts = f$contracts, Exposure = f$exposure,
-                       ECL = f$ecl, `ECL coverage %` = f$coverage, check.names = FALSE)
-      .rt(df, sortable = FALSE, pagination = FALSE, columns = list(
-        Exposure = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-        ECL = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-        `ECL coverage %` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v))))
-    })
-
-    output$t_movers <- reactable::renderReactable({
-      a <- dat_a(); b <- dat_b(); if (is.null(a) || is.null(b)) return(NULL)
-      m <- merge(a[, c("contract", "customer", "portfolio", "ecl", "stage", "rating")],
-                 b[, c("contract", "ecl", "stage", "rating")],
-                 by = "contract", suffixes = c("_a", "_b"))
-      if (nrow(m) == 0) return(NULL)
-      m$change <- m$ecl_b - m$ecl_a
-      m <- m[order(-abs(m$change)), , drop = FALSE]
-      m <- utils::head(m, 25)
-      arrow <- function(x, y) {
-        x <- as.character(x); y <- as.character(y)
-        ifelse(is.na(x) & is.na(y), "\u2014",
-        ifelse(is.na(y) | x == y, x, paste(x, "\u2192", y)))
-      }
-      df <- data.frame(Contract = m$contract, Customer = m$customer,
-                       Portfolio = m$portfolio,
-                       Stage = arrow(m$stage_a, m$stage_b),
-                       Rating = arrow(m$rating_a, m$rating_b),
-                       Before = m$ecl_a, After = m$ecl_b, Change = m$change,
-                       check.names = FALSE)
-      .rt(df, defaultPageSize = 12, searchable = TRUE, columns = list(
-        Before = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-        After = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-        Change = reactable::colDef(align = "right", cell = function(v) .an_money(v),
-          style = function(v) list(color = if (v >= 0) .AN_COL$err else .AN_COL$ok,
-                                   fontWeight = "600"))))
-    })
 
     output$t_profile <- reactable::renderReactable({
       p <- run_profile(dat_a(), "portfolio"); if (is.null(p)) return(NULL)
