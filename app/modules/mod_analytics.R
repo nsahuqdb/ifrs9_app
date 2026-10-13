@@ -656,13 +656,11 @@ mod_analytics_server <- function(id, runs_root = NULL) {
               note = "Staging is decided per customer, but Tasdeer and contagion act per contract, so the trigger breakdown is contract-level."),
 
             reactable::reactableOutput(ns("t_stagedist")),
+            uiOutput(ns("thr_note")),
             hr(),
             fluidRow(
               column(6, h5("Why each Stage 2 contract is in Stage 2"), uiOutput(ns("c_s2trig"))),
               column(6, h5("Trigger combinations"), uiOutput(ns("c_s2overlap")))),
-            hr(),
-            fluidRow(column(4, numericInput(ns("dpd_thr"), "Stage 2 DPD threshold",
-                                            value = 60, min = 0, max = 90, width = "100%"))),
             hr(), h5("Stage 3 drivers"), reactable::reactableOutput(ns("t_s3")),
             hr(), h5("DPD distribution by stage (customers)"), uiOutput(ns("c_dpdstage")),
             hr(), h5("Staging consistency"), uiOutput(ns("t_stagechk"))),
@@ -674,7 +672,10 @@ mod_analytics_server <- function(id, runs_root = NULL) {
               "Weighted PD" = "Exposure-weighted average PD for the segment \u2014 large exposures count more.",
               "Simple mean PD" = "Unweighted average across contracts. A gap against the weighted figure means the risk sits in a few large names.",
               "PD bucket" = "The rating's hierarchy number, which selects the PD curve for that portfolio.",
-              "Rating scale" = "Internal and external scales reuse hierarchy 1&ndash;21, so only one scale is shown at a time."),
+              "Rating scale" = "Internal and external scales reuse hierarchy 1&ndash;21, so only one scale is shown at a time.",
+              "PD term structure" = "Cumulative probability of default by month, one curve per portfolio and rating bucket, taken from the run's StPD output.",
+              "Marginal PD" = "The increment each month: <code>cumulative PD(m) &minus; cumulative PD(m&minus;1)</code>. This is what the ECL sum uses.",
+              "Rating bucket" = "The rating's hierarchy number. A higher bucket is a worse grade and should carry a higher curve."),
               note = "ECL coverage should rise as the rating worsens. A kink usually means a rating or curve mapping is wrong rather than a genuine risk pattern."),
 
             fluidRow(
@@ -686,7 +687,17 @@ mod_analytics_server <- function(id, runs_root = NULL) {
               choices = c("Stage" = "stage", "Portfolio" = "portfolio",
                           "Rating" = "rating", "Account type" = "account_type"),
               width = "100%"))),
-            reactable::reactableOutput(ns("t_pd"))),
+            reactable::reactableOutput(ns("t_pd")),
+            hr(), h5("PD term structure"),
+            fluidRow(
+              column(4, uiOutput(ns("pick_pf"))),
+              column(5, uiOutput(ns("pick_buckets"))),
+              column(3, selectInput(ns("curve_view"), "View",
+                choices = c("Selected curves" = "lines", "All curves as a heatmap" = "heat"),
+                width = "100%"))),
+            fluidRow(
+              column(6, h5("Cumulative"), uiOutput(ns("c_pdterm"))),
+              column(6, h5("Marginal PD by month"), uiOutput(ns("c_pdmarg"))))),
           nav_panel("LGD & collateral",
             qdb_help(list(
               "LGD" = "Loss given default: <code>0.45 &times; max(0.5, (exposure &minus; collateral) / exposure)</code>, floored at 0.225.",
@@ -694,7 +705,9 @@ mod_analytics_server <- function(id, runs_root = NULL) {
               "The 0.5" = "At least half of any exposure is treated as unsecured, however much collateral is held.",
               "The 0.225 floor" = "The lowest LGD any contract can carry, being 0.45 &times; 0.5. It applies to Stage 2 as well.",
               "Collateral coverage" = "Net collateral value divided by exposure. Over 100% means over-collateralised \u2014 the floor still applies.",
-              "On floor" = "Contracts sitting exactly at 0.225, i.e. secured enough that more collateral would not reduce the provision."),
+              "On floor" = "Contracts sitting exactly at 0.225, i.e. secured enough that more collateral would not reduce the provision.",
+              "Collateral by type" = "Total collateral value by type.",
+              "Orphan allocations" = "Collateral allocations pointing at a collateral record that does not exist. LIC returns NaN coverage for these, which blanks the whole contract's ECL."),
               note = "Because of the floor, collateral beyond roughly 50% coverage does not reduce LGD any further."),
             fluidRow(
               column(6, h5("LGD distribution"), uiOutput(ns("c_lgddist"))),
@@ -702,14 +715,16 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             hr(),
             fluidRow(
               column(6, h5("LGD vs collateral coverage"), uiOutput(ns("c_lgdscatter"))),
-              column(6, h5("LGD floor incidence"), reactable::reactableOutput(ns("t_floor"))))),
+              column(6, h5("LGD floor incidence"), reactable::reactableOutput(ns("t_floor")))),
+            hr(), h5("Collateral composition"), uiOutput(ns("c_coll"))),
           nav_panel("Exposure & maturity",
             qdb_help(list(
               "Run-off profile" = "Exposure and ECL grouped by remaining months to maturity \u2014 how quickly the book matures.",
               "Exposure bands" = "Contracts grouped by ticket size, showing whether the book is many small facilities or a few large ones.",
               "Vintage" = "Grouped by the year the facility was opened. Coverage by vintage shows whether a particular year's lending is performing worse.",
               "Delinquency" = "Grouped by days past due. Coverage should climb steeply across the buckets.",
-              "ECL coverage %" = "ECL divided by exposure within each band."),
+              "ECL coverage %" = "ECL divided by exposure within each band.",
+              "EAD run-off" = "Total exposure at default by month ahead, from the supplied monthly EAD curves: the expected amortisation of the book. Off BS, Al Dhameen and Tasdeer carry no curve, so they are outside it."),
               note = "Longer-dated exposure normally carries higher coverage, because the lifetime PD accumulates over more months."),
             fluidRow(
               column(6, h5("Run-off profile by remaining maturity"), uiOutput(ns("c_maturity"))),
@@ -717,7 +732,8 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             hr(),
             fluidRow(
               column(6, h5("Vintage by origination year"), uiOutput(ns("c_vintage"))),
-              column(6, h5("Delinquency profile"), uiOutput(ns("c_dpd"))))),
+              column(6, h5("Delinquency profile"), uiOutput(ns("c_dpd")))),
+            hr(), h5("Aggregate EAD run-off (supplied curves)"), uiOutput(ns("c_runoff"))),
           nav_panel("Concentration",
             fluidRow(column(4, selectInput(ns("conc_level"), "Measure by",
               choices = c("Contract" = "contract", "Customer" = "customer"),
@@ -737,30 +753,6 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             hr(), h5("Largest contributors to the provision"),
             p(class = "small-muted", "Follows the Measure by selection above."),
             reactable::reactableOutput(ns("t_top"))),
-          nav_panel("Model curves",
-            fluidRow(
-              column(4, uiOutput(ns("pick_pf"))),
-              column(5, uiOutput(ns("pick_buckets"))),
-              column(3, selectInput(ns("curve_view"), "View",
-                choices = c("Selected curves" = "lines", "All curves as a heatmap" = "heat"),
-                width = "100%"))),
-            p(class = "small-muted", "Pick buckets to compare, or use the heatmap for all."),
-            qdb_help(list(
-              "PD term structure" = "Cumulative probability of default by month, one curve per portfolio and rating bucket, taken from the run's StPD output.",
-              "Marginal PD" = "The increment each month: <code>cumulative PD(m) &minus; cumulative PD(m&minus;1)</code>. This is what the ECL sum uses.",
-              "Rating bucket" = "The rating's hierarchy number. A higher bucket is a worse grade and should carry a higher curve.",
-              "EAD run-off" = "Total exposure at default by month ahead, from the supplied monthly EAD curves. It shows the expected amortisation of the book.",
-              "Collateral by type" = "Total collateral value by type.",
-              "Orphan allocations" = "Collateral allocations pointing at a collateral record that does not exist. LIC returns NaN coverage for these, which blanks the whole contract's ECL."),
-              note = "The EAD run-off covers only contracts with a supplied curve. Off BS, Al Dhameen and Tasdeer carry none, so they are outside that chart."),
-
-            h5("PD term structure \u2014 cumulative"), uiOutput(ns("c_pdterm")),
-            hr(), h5("Marginal PD by month"), uiOutput(ns("c_pdmarg")),
-            hr(),
-            fluidRow(
-              column(6, h5("Aggregate EAD run-off (supplied curves)"),
-                     uiOutput(ns("c_runoff"))),
-              column(6, h5("Collateral composition"), uiOutput(ns("c_coll"))))),
           nav_panel("Data quality",
             p(class = "small-muted", style = "margin-top:8px",
               "Conditions that distort a provision."),
@@ -2704,19 +2696,19 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     .rt_levels <- reactive({ an_rating_levels(inp_a(), .rt_sel()) })
 
     # ---- staging -----------------------------------------------------------
-    # Default the Stage 2 DPD threshold from the run's own static reference
-    # (staging_thresholds.csv) rather than assuming 60.
-    .thr_default <- reactive({
+    # Read on the run's own staging policy: the Stage 2 DPD threshold it froze
+    # (config_used/static/staging_thresholds.csv), not an assumed 60. What a
+    # different threshold would cost is Staging policy, under What-if &
+    # scenarios.
+    .thr <- reactive({
       d <- .out_dir_for(input$run_a)
       if (is.null(d)) return(60)
       staging_threshold(d, 60)
     })
-    observeEvent(.thr_default(), {
-      updateNumericInput(session, "dpd_thr", value = .thr_default())
-    }, ignoreInit = TRUE)
-    .thr <- reactive({
-      v <- suppressWarnings(as.numeric(input$dpd_thr))
-      if (length(v) != 1 || is.na(v)) .thr_default() else v
+    output$thr_note <- renderUI({
+      p(class = "small-muted", style = "margin-top:6px",
+        sprintf("Days past due under this run's policy: Stage 2 above %s, Stage 3 above 90. The other triggers are below.",
+                format(.thr())))
     })
 
     output$t_stagedist <- reactable::renderReactable({

@@ -225,6 +225,20 @@ code { background: var(--qdb-plum-050); color: var(--qdb-plum-700); padding: .1e
 }
 .navbar-nav .nav-link { border-radius: 9px; }
 .navbar-nav .nav-link:hover { background: rgba(255,255,255,.10); }
+/* The menu holding the page on screen -- the item itself, or the dropdown the
+   page is in -- is a white pill, as the page is marked in its list. The theme
+   gave it plum text on the plum bar, the least visible item on it. */
+.navbar .navbar-nav > .nav-item > .nav-link.active,
+.navbar .navbar-nav > .nav-item > .nav-link.active:hover,
+.navbar .navbar-nav > .nav-item > .nav-link.active:focus {
+  background: #fff; color: var(--qdb-plum) !important; font-weight: 700;
+}
+/* any other item stays white text when hovered or open, as at rest */
+.navbar .navbar-nav > .nav-item > .nav-link:hover,
+.navbar .navbar-nav > .nav-item > .nav-link:focus,
+.navbar .navbar-nav > .nav-item.show > .nav-link {
+  color: #fff !important;
+}
 
 /* =============================================================================
    Density pass (H81) — compact everything so more fits without scrolling
