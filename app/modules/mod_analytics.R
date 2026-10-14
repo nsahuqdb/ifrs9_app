@@ -1,15 +1,19 @@
 # =============================================================================
 # app/modules/mod_analytics.R
 #
-# Analytics page. Two modes, each a set of tabs:
+# Analytics page. Three modes, each a set of tabs:
 #
-#   Single run    Overview | PD | LGD & collateral | Exposure & maturity |
-#                 Concentration | Data quality
-#   Compare runs  Movement | Migration
+#   Single run      Overview | Staging | PD | LGD & collateral |
+#                   Exposure & maturity | Concentration | Scenarios |
+#                   Data quality
+#   Compare runs    Movement | Migration
+#   Stress testing  Stress test | Sensitivity (Each lever, To a target,
+#                   Staging threshold) | Macro & scenarios | Roll forward
 #
 # Movement is ecl_bridge(): every contract repriced with compute_ecl(), the
 # function the pipeline prices with, a cause at a time. The stress tabs reprice
-# with the same function, so no tab has an ECL calculation of its own.
+# with the same function, through one stress function (stress_apply()), so no
+# tab has an ECL calculation of its own.
 #
 # All computation lives in the ifrs9qdb package (pure functions, no Shiny).
 # This module only selects runs, loads reports and renders. Charts use
@@ -207,6 +211,13 @@
   rbind(out, steps[steps$key == "closing", c("key", "label", "amount", "kind")])
 }
 
+# The lever sensitivity's moves, by the name each is edited under.
+.TN_KEYS <- c(pd_multiplier = "PD multiplier", rating_notches = "Rating notches",
+              collateral_pct = "Collateral %", exposure_pct = "Exposure %",
+              lgd_base = "LGD base", lgd_floor = "LGD floor",
+              dpd_threshold = "DPD threshold", default_top_n = "Largest N default",
+              contagion = "Contagion", tasdeer_collective = "Tasdeer collective")
+
 mod_analytics_ui <- function(id) {
   ns <- NS(id)
   div(class = "qdb-page",
@@ -218,7 +229,7 @@ mod_analytics_ui <- function(id) {
         column(3, selectInput(ns("mode"), "View",
                               choices = c("Single run" = "single",
                                           "Compare two runs" = "compare",
-                                          "What-if & scenarios" = "scenario"),
+                                          "Stress testing" = "stress"),
                               width = "100%")),
         column(4, uiOutput(ns("pick_a"))),
         column(4, uiOutput(ns("pick_b"))),
@@ -253,7 +264,6 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     output$pick_a <- renderUI({
       ch <- run_choices()
       lbl <- if (identical(input$mode, "compare")) "Prior run (opening)" else "Run"
-      if (identical(input$mode, "scenario")) lbl <- "Run to reweight"
       sel <- if (identical(input$mode, "compare") && length(ch) > 1) ch[2] else ch[1]
       selectInput(ns("run_a"), lbl, choices = ch, selected = sel, width = "100%")
     })
@@ -360,115 +370,138 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             h5(style = "margin-top:14px", "Customers whose stage changed"),
             reactable::reactableOutput(ns("t_stagemove")),
             hr(), h5("Rating migration matrix"), uiOutput(ns("c_ratmig"))))
-      } else if (identical(input$mode, "scenario")) {
-        se <- scen_source()
-        if (is.null(se) || isFALSE(se$ok))
-          return(qdb_empty(se$reason %||% "Scenario provisions are not available for this run.",
-                           "sliders"))
+      } else if (identical(input$mode, "stress")) {
+        # One stress function behind every tab (stress_apply()): a stress test
+        # names who it reaches and what changes, so a what-if on named
+        # customers, a staging-policy change and a package are all one;
+        # Sensitivity moves its levers one at a time.
         navset_card_tab(
-          nav_panel("What-if",
+          nav_panel("Stress test",
             p(class = "small-muted", style = "margin-top:8px",
-              "Add a rule, enter the customers it applies to, set what changes, then Apply."),
+              "Name who a stress reaches and what changes for them, then Run. Several run side by side."),
             qdb_help(list(
-              "Rule" = "Who a change applies to (customer ids, or portfolio and stage filters) and what changes for them. Several rules can apply different changes to different customers at once.",
-              "Conflict" = "A contract matched by more than one rule. It is skipped rather than having the rules combined.",
+              "Stress" = "Who it reaches — every contract in the portfolios AND stages AND customers named; an empty one does not narrow it — and what changes for them. A package, a what-if on named customers and a staging-policy change are all one.",
+              "Customer ids" = "Comma or semicolon separated; a name with spaces is one id. The customers named are shown as they stand while you type, so a mistyped id shows before anything is priced.",
+              "Stage 2 DPD threshold" = "Stage 2 applies when days past due exceed this and are at most 90 (<code>DPD &gt; threshold</code>). Left at the run's own, with every trigger on, the reported stages stand, manual overrides included.",
+              "Triggers" = "Contagion lifts a customer's Stage 1 facilities when another is Stage 2 or worse (Tasdeer excluded); Tasdeer is collectively Stage 2; the watchlist and the local flags (restructuring and the other five indicators) force Stage 2.",
               "Move to stage" = "Sets the ECL horizon: Stage 1 is capped at 12 months, Stage 2 runs to maturity, Stage 3 books the full outstanding.",
-              "Rating notches" = "Moves along that customer's own rating scale. Positive is a downgrade, and it selects a different PD curve.",
-              "Collateral %" = "Scales collateral value, which feeds LGD through the coverage ratio and the 0.225 floor.",
-              "Exposure %" = "Scales the balance and therefore the EAD curve.",
-              "Extend maturity" = "Shifts the maturity date, lengthening the ECL horizon.",
-              "PD scenario" = "Substitutes that scenario's PD curve from this run's own scenario output.",
-              "Facilities" = "Shows \u201c2 of 4\u201d when a rule touched only part of a customer's relationship."),
-              note = "The book is repriced with the production ECL function, so every rule inherits the engine's own EAD, LGD, staging and discounting logic. Nothing is re-run and nothing is written."),
-
-            uiOutput(ns("wi_rules_ui")),
-            div(style = "margin:8px 0 14px",
-              actionButton(ns("wi_add_rule"), "Add rule", icon = icon("plus"),
-                           class = "btn-sm btn-outline-primary"),
-              actionButton(ns("wi_apply"), "Apply all rules", icon = icon("play"),
-                           class = "btn-sm btn-primary", style = "margin-left:8px")),
-            uiOutput(ns("wi_result"))),
-          nav_panel("Staging policy",
-            p(class = "small-muted", style = "margin-top:8px",
-              "Change the staging rule and reprice. Scope it to the whole book or chosen portfolios."),
-            qdb_help(list(
-              "DPD threshold" = "Stage 2 applies when days past due exceed this and are at most 90. The rule is <code>DPD &gt; threshold</code>, so 60 means 61 days and over.",
-              "Contagion" = "A customer with any Stage 2 or worse facility has its Stage 1 facilities bumped to Stage 2. Tasdeer is excluded.",
-              "Tasdeer collective" = "Tasdeer is staged 2 regardless of any other trigger.",
-              "Watchlist / local flags" = "Whether those flags force Stage 2. Local flags cover restructuring and the other five local indicators.",
-              "Scope" = "Only contracts in scope are re-staged; everything else keeps its reported stage, so a portfolio stress cannot silently move the rest of the book."),
-              note = "Re-staging uses the report's own staging function, and repricing uses the production ECL function, so the result is what a run under this policy would produce."),
-            div(class = "qdb-card", style = "padding:12px",
-              fluidRow(
-                column(4, uiOutput(ns("sp_scope"))),
-                column(3, numericInput(ns("sp_thr"), "Stage 2 DPD threshold",
-                                       value = 60, min = 0, max = 90, step = 5, width = "100%")),
-                column(5, div(style = "margin-top:24px",
-                  checkboxInput(ns("sp_contagion"), "Contagion between a customer's facilities", TRUE),
-                  checkboxInput(ns("sp_tasdeer"), "Tasdeer collectively Stage 2", TRUE)))),
-              fluidRow(
-                column(4, checkboxInput(ns("sp_watch"), "Watchlist forces Stage 2", TRUE)),
-                column(4, checkboxInput(ns("sp_local"), "Local flags force Stage 2", TRUE)),
-                column(4, actionButton(ns("sp_apply"), "Apply policy", icon = icon("play"),
-                                       class = "btn-sm btn-primary")))),
-            uiOutput(ns("sp_result")),
-            hr(), h5("Provision across DPD thresholds"),
-            p(class = "small-muted", "Everything else held at the settings above."),
-            uiOutput(ns("sp_sweep"))),
-          nav_panel("Stress packages",
-            p(class = "small-muted", style = "margin-top:8px",
-              "Combine levers into a named stress, save it, and compare packages side by side."),
-            qdb_help(list(
-              "Package" = "A named set of levers applied together. Saved to <code>config/stress_packages.yml</code> so the same stress can be re-run next quarter and compared like for like.",
-              "Scope" = "Whole book, or chosen portfolios. Only contracts in scope are affected.",
-              "PD multiplier" = "Scales every cumulative PD curve, capped at 1. A blunt but standard supervisory shock.",
-              "LGD base" = "The unsecured loss rate, normally 0.45.",
-              "LGD unsecured floor" = "The minimum unsecured share, normally 0.5. Raising it RAISES the LGD floor (base x floor), so it bites hardest on well-secured lending.",
-              "Collateral %" = "Scales collateral value; LGD then moves through the real formula.",
-              "Exposure %" = "Scales balances and therefore the EAD curves.",
-              "Rating notches" = "Moves every in-scope contract along its own rating scale. Positive is a downgrade.",
-              "Default largest N" = "Forces the N largest customers by provision to Stage 3, which books their full outstanding. The classic single-name concentration stress.",
-              "Staging policy" = "The same levers as the Staging policy tab, so a package can combine a policy change with a parameter shock."),
-              note = "Every lever is applied by varying the inputs to the production ECL function or its context, so the engine's EAD waterfall, LGD formula, horizons, discounting and exposure cap all still apply."),
+              "Largest N default" = "The scope's N largest customers by exposure forced to Stage 3, booking their full outstanding.",
+              "PD multiplier" = "Scales every cumulative PD curve, capped at 1.",
+              "PD scenario" = "Prices the scope on that scenario's PD curves, from this run's own scenario output, instead of the weighted ones.",
+              "Rating notches" = "Moves along each contract's own rating scale. Positive is a downgrade, and it selects a different PD curve.",
+              "LGD base and floor" = "The unsecured loss rate and the minimum unsecured share, this run's own to start with. Raising the floor bites hardest on well-secured lending.",
+              "Collateral %" = "Scales collateral value, which feeds LGD through the coverage ratio.",
+              "Exposure %" = "Scales the balance and therefore the EAD curve, a supplied schedule included.",
+              "Extend maturity" = "Moves the maturity date by calendar months; a supplied repayment schedule is re-profiled onto the new term.",
+              "Standard packages" = "Mild and severe downturn, collateral revaluation, staging tightened to 30 days and the largest five defaulting, each on the internally rated portfolios.",
+              "Save" = "Writes <code>config/stress_packages.yml</code>, which the Python app reads too, so the same stresses run next quarter."),
+              note = "Every lever reaches the scope and nothing else, and the book is repriced with the production ECL function, so the engine's EAD, LGD, staging, discounting and exposure cap all still apply. Nothing is re-run and nothing is written."),
             uiOutput(ns("stp_note")),
+            div(style = "margin:4px 0 10px",
+              actionButton(ns("stp_add"), "Add a package", icon = icon("plus"),
+                           class = "btn-sm btn-outline-primary"),
+              actionButton(ns("stp_std"), "Add the standard packages", icon = icon("layer-group"),
+                           class = "btn-sm btn-outline-primary", style = "margin-left:4px"),
+              actionButton(ns("stp_load"), "Load saved", icon = icon("folder-open"),
+                           class = "btn-sm btn-outline-secondary", style = "margin-left:4px"),
+              actionButton(ns("stp_save"), "Save", icon = icon("floppy-disk"),
+                           class = "btn-sm btn-outline-secondary", style = "margin-left:4px")),
             uiOutput(ns("stp_editor")),
             div(style = "margin:8px 0 14px",
-              actionButton(ns("stp_add"), "Add package", icon = icon("plus"),
-                           class = "btn-sm btn-outline-primary"),
-              actionButton(ns("stp_run"), "Run all", icon = icon("play"),
-                           class = "btn-sm btn-primary", style = "margin-left:8px"),
-              actionButton(ns("stp_save"), "Save", icon = icon("floppy-disk"),
-                           class = "btn-sm btn-outline-secondary", style = "margin-left:8px"),
-              actionButton(ns("stp_load"), "Load saved", icon = icon("folder-open"),
-                           class = "btn-sm btn-outline-secondary", style = "margin-left:4px")),
+              actionButton(ns("stp_run"), "Run", icon = icon("play"),
+                           class = "btn-sm btn-primary")),
             uiOutput(ns("stp_result"))),
-          nav_panel("Reverse stress",
+          nav_panel("Sensitivity",
             p(class = "small-muted", style = "margin-top:8px",
-              "Set a provision increase and see how far each lever would have to move to cause it."),
+              "Which lever the provision turns on, and how far it would have to move. Each repricing goes through the same stress function as Stress test."),
+            navset_pill(
+              nav_panel("Each lever",
+                qdb_help(list(
+                  "What this shows" = "Where the provision is actually sensitive. A lever with a large bar is one to watch; a flat one is not worth stressing.",
+                  "One at a time" = "Every lever starts from the same base and moves alone, so the bars are comparable. They do not add up — combining levers is a stress test.",
+                  "Standard moves" = "PD +25%, one and two notch downgrades, collateral down 25% and 50%, exposure +20%, LGD base and floor shifts, DPD threshold 60 to 30, the largest five defaulting, contagion off, Tasdeer not collective."),
+                  note = "Runs a full repricing per lever, so it takes several seconds."),
+                uiOutput(ns("tn_levers")),
+                div(style = "margin:6px 0 12px",
+                  actionButton(ns("tn_run"), "Price each lever", icon = icon("chart-simple"),
+                               class = "btn-sm btn-primary")),
+                uiOutput(ns("tn_result"))),
+              nav_panel("To a target",
+                qdb_help(list(
+                  "Target" = "The increase in the total provision you want to reach, in percent.",
+                  "Required level" = "How far that lever must move to get there, found by repricing repeatedly and narrowing in — not read off a grid.",
+                  "Beyond range" = "The lever cannot reach the target on its own, even at the extreme of its range. The percentage shown is the most it achieves.",
+                  "PD multiplier" = "Every cumulative PD curve scaled by this factor.",
+                  "Rating downgrade" = "Notches every in-scope contract moves down its own scale.",
+                  "Collateral value" = "Collateral falls to this percentage of current value.",
+                  "Largest customers defaulting" = "How many of the biggest customers would have to reach Stage 3."),
+                  note = "Each lever is solved on its own, with everything else at base. The lever needing the smallest move is the one the provision is most exposed to."),
+                div(class = "qdb-card", style = "padding:12px",
+                  fluidRow(
+                    column(3, numericInput(ns("rv_target"), "Target provision increase (%)",
+                                           value = 25, min = 1, max = 500, step = 5, width = "100%")),
+                    column(4, uiOutput(ns("rv_scope"))),
+                    column(3, div(style = "margin-top:24px",
+                      actionButton(ns("rv_run"), "Solve", icon = icon("magnifying-glass"),
+                                   class = "btn-sm btn-primary"))))),
+                uiOutput(ns("rv_result"))),
+              nav_panel("Staging threshold",
+                qdb_help(list(
+                  "Threshold" = "Stage 2 applies when days past due exceed it and are at most 90 (<code>DPD &gt; threshold</code>).",
+                  "Policy in force" = "The threshold this run used, from its frozen config. It is always priced, and every other row is measured from it.",
+                  "Why so flat" = "Most of the book is staged by watchlist, restructuring and contagion rather than by days past due, so moving the threshold moves comparatively little. That is the finding."),
+                  note = "Each threshold is a full repricing, with everything else held. A different policy with other levers is a stress test."),
+                div(class = "qdb-card", style = "padding:12px",
+                  fluidRow(
+                    column(4, selectInput(ns("sw_days"), "Thresholds to price (days)",
+                                          choices = c(0, 15, 30, 45, 60, 75, 90),
+                                          selected = c(0, 30, 60, 90), multiple = TRUE,
+                                          width = "100%")),
+                    column(4, uiOutput(ns("sw_scope"))),
+                    column(3, div(style = "margin-top:24px",
+                      actionButton(ns("sw_run"), "Reprice", icon = icon("play"),
+                                   class = "btn-sm btn-primary"))))),
+                uiOutput(ns("sw_result"))))),
+          nav_panel("Macro & scenarios",
+            p(class = "small-muted", style = "margin-top:8px",
+              "Change the macro path or the scenario weights, rebuild the PD curves and reprice."),
             qdb_help(list(
-              "Target" = "The increase in the total provision you want to reach, in percent.",
-              "Required level" = "How far that lever must move to get there, found by repricing repeatedly and narrowing in \u2014 not read off a grid.",
-              "Beyond range" = "The lever cannot reach the target on its own, even at the extreme of its range. The percentage shown is the most it achieves.",
-              "PD multiplier" = "Every cumulative PD curve scaled by this factor.",
-              "Rating downgrade" = "Notches every in-scope contract moves down its own scale.",
-              "Collateral value" = "Collateral falls to this percentage of current value.",
-              "Largest customers defaulting" = "How many of the biggest customers would have to reach Stage 3."),
-              note = "Each lever is solved on its own, with everything else at base. The lever needing the smallest move is the one the provision is most exposed to."),
-            div(class = "qdb-card", style = "padding:12px",
-              fluidRow(
-                column(3, numericInput(ns("rv_target"), "Target provision increase (%)",
-                                       value = 25, min = 1, max = 500, step = 5, width = "100%")),
-                column(4, uiOutput(ns("rv_scope"))),
-                column(3, div(style = "margin-top:24px",
-                  actionButton(ns("rv_run"), "Solve", icon = icon("magnifying-glass"),
-                               class = "btn-sm btn-primary"))))),
-            uiOutput(ns("rv_result"))),
+              "What this does" = "Replaces the macro forecast and the scenario weights as asked, then re-runs the whole PD chain — <code>stress_mevs</code> to the annual term structure to the monthly StPD — and reprices every contract with the production ECL function. The change propagates through the model rather than being applied to the answer.",
+              "Shock" = "An absolute shift applied to every year of one variable. −2 on GDP growth means two percentage points lower across the whole path.",
+              "Model weight" = "Each variable's weight in the model. A variable weighted zero will not move the provision however far it is shocked — that is the model, not a fault.",
+              "Scenario weights" = "Internal weights run on <code>auto_non_oil_gdp_cdf</code>, and the loader takes that forecast from Non-Oil GDP in the FIRST TWO years of this table — so by default the weights follow the path. Hold them to isolate the PD effect, or set them yourself: they start at the weights this run is priced with, and left there reprice to the booked figure exactly.",
+              "Ten points onto each scenario" = "Each row adds 10 percentage points to one scenario, taken from the others in proportion, and reprices the book on this run's own forecast — from the weights you set, or this run's own.",
+              "External scale" = "Investments and Banks & FIs keep their own weights, which follow GCC growth year by year.",
+              "Held fixed" = "Collateral, LGD, staging and the EAD curves are untouched, so what you see is the macro effect alone."),
+              note = "This rebuilds the term structure and the monthly PD curves before repricing, so it takes a few seconds; the ten-point sensitivity reprices five times."),
+            uiOutput(ns("mev_editor")),
+            div(class = "qdb-card", style = "padding:12px;margin-bottom:8px",
+              radioButtons(ns("mev_wmode"), "Scenario weights",
+                choices = c(
+                  "Follow the new path (as the model is configured)" = "auto",
+                  "Hold this run's weights" = "hold",
+                  "Set my own" = "custom"),
+                selected = "auto"),
+              conditionalPanel(
+                condition = sprintf("input['%s'] == 'custom'", ns("mev_wmode")),
+                uiOutput(ns("mev_wcustom")))),
+            div(style = "margin:8px 0 14px",
+              actionButton(ns("mev_run"), "Rebuild and reprice", icon = icon("play"),
+                           class = "btn-sm btn-primary"),
+              actionButton(ns("sens_run"), "Ten points onto each scenario",
+                           icon = icon("scale-balanced"),
+                           class = "btn-sm btn-outline-primary", style = "margin-left:8px"),
+              actionButton(ns("mev_reset"), "Reset to the run's forecast",
+                           icon = icon("rotate-left"),
+                           class = "btn-sm btn-outline-secondary", style = "margin-left:8px")),
+            uiOutput(ns("mev_result")),
+            uiOutput(ns("c_sens")), reactable::reactableOutput(ns("t_sens"))),
           nav_panel("Roll forward",
             p(class = "small-muted", style = "margin-top:8px",
               "What the provision becomes in n months if nothing else changes."),
             qdb_help(list(
               "What this is" = "A mechanical roll of the existing book. The contracts are untouched; only the reporting date moves, so this isolates TIME DECAY from any credit view.",
-              "Balance" = "Advanced along each contract's own EAD curve \u2014 elapsed months are dropped, so the balance is what the schedule says it will be at that date, not today's.",
+              "Balance" = "Advanced along each contract's own EAD curve — elapsed months are dropped, so the balance is what the schedule says it will be at that date, not today's.",
               "PD" = "Conditional on surviving those months: <code>(cumPD(k+t) &minus; cumPD(k)) / (1 &minus; cumPD(k))</code>. Using the original curve would charge for a default already known not to have happened.",
               "Matured" = "Contracts reaching maturity inside the window have run off and carry no provision. Reported separately rather than dropped quietly.",
               "Not a forecast" = "Staging, ratings and collateral are held. Comparing this with the actual next-quarter run separates what time did from what credit did."),
@@ -481,86 +514,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
                 column(3, div(style = "margin-top:24px",
                   actionButton(ns("rf_run"), "Roll forward", icon = icon("forward"),
                                class = "btn-sm btn-primary"))))),
-            uiOutput(ns("rf_result"))),
-          nav_panel("Lever sensitivity",
-            p(class = "small-muted", style = "margin-top:8px",
-              "Each lever moved on its own, ranked by effect on the provision. Edit any move before running."),
-            qdb_help(list(
-              "What this shows" = "Where the provision is actually sensitive. A lever with a large bar is one to watch; a flat one is not worth stressing.",
-              "One at a time" = "Every lever starts from the same base and moves alone, so the bars are comparable. They do not add up \u2014 combining levers needs a stress package.",
-              "Standard moves" = "PD +25%, one and two notch downgrades, collateral down 25% and 50%, exposure +20%, LGD base and floor shifts, DPD threshold 60 to 30, the largest five defaulting, contagion off, Tasdeer not collective."),
-              note = "Runs a full repricing per lever, so it takes several seconds."),
-            uiOutput(ns("tn_levers")),
-            div(style = "margin:6px 0 12px",
-              actionButton(ns("tn_run"), "Run", icon = icon("chart-simple"),
-                           class = "btn-sm btn-primary")),
-            uiOutput(ns("tn_result"))),
-          nav_panel("MEV forecast",
-            p(class = "small-muted", style = "margin-top:8px",
-              "Change the macro path for the next five years and rebuild the PD curves."),
-            qdb_help(list(
-              "What this does" = "Replaces the macro forecast, then re-runs the whole PD chain \u2014 <code>stress_mevs</code> to the annual term structure to the monthly StPD \u2014 and reprices. The change propagates through the model rather than being applied to the answer.",
-              "Versus scenario weights" = "Reweighting moves probability between the five scenarios but leaves the macro path alone. This changes the path itself, so all five scenarios shift together.",
-              "Shock" = "An absolute shift applied to every year of one variable. \u22122 on GDP growth means two percentage points lower across the whole path.",
-              "Model weight" = "Each variable's weight in the model. A variable weighted zero will not move the provision however far it is shocked \u2014 that is the model, not a fault.",
-              "Held fixed" = "Collateral, LGD, staging and the EAD curves are untouched, so what you see is the macro effect alone.",
-              "Scenario weights" = "Internal weights run on <code>auto_non_oil_gdp_cdf</code>, and the loader takes that forecast from Non-Oil GDP in the FIRST TWO years of this table \u2014 so by default the weights move with the path. Hold them to isolate the PD effect, or set them yourself.",
-              "Which years matter" = "Only years 1 and 2 of Non-Oil GDP feed the weights (<code>n_forecast_years: 2</code>). Later years change the curves but not the weights."),
-              note = "This rebuilds the term structure and the monthly PD curves before repricing, so it takes a few seconds."),
-            uiOutput(ns("mev_editor")),
-            div(class = "qdb-card", style = "padding:12px;margin-bottom:8px",
-              radioButtons(ns("mev_wmode"), "Scenario weights",
-                choices = c(
-                  "Let them follow the new path (as the model is configured)" = "auto",
-                  "Hold them at this run's weights" = "hold",
-                  "Set them myself" = "custom"),
-                selected = "auto"),
-              conditionalPanel(
-                condition = sprintf("input['%s'] == 'custom'", ns("mev_wmode")),
-                uiOutput(ns("mev_wcustom")))),
-            div(style = "margin:8px 0 14px",
-              actionButton(ns("mev_run"), "Rebuild and reprice", icon = icon("play"),
-                           class = "btn-sm btn-primary"),
-              actionButton(ns("mev_reset"), "Reset to the run's forecast",
-                           icon = icon("rotate-left"),
-                           class = "btn-sm btn-outline-secondary", style = "margin-left:8px")),
-            uiOutput(ns("mev_result"))),
-          nav_panel("Scenario comparison",
-            p(class = "small-muted", style = "margin-top:8px",
-              "Provision under each scenario."),
-            qdb_help(list(
-              "Scenario" = "One of the five forward-looking macro scenarios. Each has its own PD curve.",
-              "Severity z" = "The scenario's severity as a standard normal shift. Negative is a downturn.",
-              "Weighted (reported)" = "The probability-weighted provision \u2014 the figure actually reported.",
-              "vs Base" = "Difference against the Base Case scenario."),
-              note = "Every run prices the book under all five scenarios as well as the weighted curve, so these come from the run's own outputs."),
-
-            uiOutput(ns("scen_origin")),
-            uiOutput(ns("c_scen")), reactable::reactableOutput(ns("t_scen"))),
-          nav_panel("What-if reweighting",
-            p(class = "small-muted", style = "margin-top:8px",
-              "Set the scenario weights and reprice: the PD curves are rebuilt with them and every contract priced with the engine's own ECL function."),
-            qdb_help(list(
-              "Weight" = "Probability assigned to each scenario on the internal scale (the QDB grades). They are normalised to 100%.",
-              "This run's weights" = "What the engine works out from the run's frozen config and prices with \u2014 not the config file's explicit weights, which on an automatic mode are a rounded snapshot.",
-              "External scale" = "Investments and Banks & FIs keep their own weights, which follow GCC growth year by year.",
-              "At these weights" = "The book repriced on PD curves rebuilt with the weights entered."),
-              note = "Not a weighted sum of the five scenario provisions: the external scale is weighted year by year and the exposure cap is not linear, so a weighted sum is not what the run would book. At the run's own weights this gives the booked figure exactly."),
-
-            uiOutput(ns("scen_sliders")),
-            uiOutput(ns("t_whatif"))),
-          nav_panel("Sensitivity",
-            p(class = "small-muted", style = "margin-top:8px",
-              "Each row adds 10pp to one scenario, taken from the others in proportion, and reprices the book."),
-            qdb_help(list(
-              "Weight before / after" = "Each row adds 10 percentage points to one scenario and removes the same 10pp from the others in proportion, so the five still total 100%. From the weights on What-if reweighting.",
-              "Provision after" = "The book repriced on PD curves rebuilt with the shifted weights.",
-              "Change" = "Provision after minus provision before."),
-              note = "The scenario with the largest change is the one the provision is most exposed to. Five repricings, so it takes a minute."),
-            div(style = "margin:8px 0 12px",
-              actionButton(ns("sens_run"), "Move ten points onto each scenario",
-                           icon = icon("play"), class = "btn-sm btn-primary")),
-            uiOutput(ns("c_sens")), reactable::reactableOutput(ns("t_sens"))))
+            uiOutput(ns("rf_result"))))
       } else {
         d <- dat_a()
         if (is.null(d)) return(qdb_empty("No ECL report found for that run.", "chart-line"))
@@ -691,6 +645,17 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             hr(), h5("Largest contributors to the provision"),
             p(class = "small-muted", "Follows the Measure by selection above."),
             reactable::reactableOutput(ns("t_top"))),
+          nav_panel("Scenarios",
+            p(class = "small-muted", style = "margin-top:8px",
+              "The provision under each of the five scenarios, beside the weighted figure the run reports."),
+            qdb_help(list(
+              "Scenario" = "One of the five forward-looking macro scenarios. Each has its own PD curve.",
+              "Severity z" = "The scenario's severity as a standard normal shift. Negative is a downturn.",
+              "Weighted (reported)" = "The probability-weighted provision — the figure actually reported.",
+              "vs Base" = "Difference against the Base Case scenario."),
+              note = "Every run prices the book under all five scenarios as well as the weighted curve, so these come from the run's own outputs. What a different weighting would cost is on Stress testing → Macro & scenarios."),
+            uiOutput(ns("scen_origin")),
+            uiOutput(ns("c_scen")), reactable::reactableOutput(ns("t_scen"))),
           nav_panel("Data quality",
             p(class = "small-muted", style = "margin-top:8px",
               "Conditions that distort a provision."),
@@ -1298,7 +1263,11 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     })
 
     output$scen_origin <- renderUI({
-      se <- scen_source(); if (is.null(se) || isFALSE(se$ok)) return(NULL)
+      se <- scen_source()
+      if (is.null(se) || isFALSE(se$ok))
+        return(div(class = "alert alert-secondary", style = "margin-top:8px",
+                   icon("circle-info"), " ",
+                   se$reason %||% "Scenario provisions are not available for this run."))
       if (identical(se$origin, "outputs"))
         div(class = "alert alert-success", style = "margin-top:8px",
             icon("circle-check"), " From this run's per-scenario ECL reports.")
@@ -1366,116 +1335,58 @@ mod_analytics_server <- function(id, runs_root = NULL) {
           cell = function(v) if (is.na(v)) "\u2014" else .an_pct(v))))
     })
 
-    output$scen_sliders <- renderUI({
-      w <- run_weights()
-      if (is.null(w)) return(.an_na("This run's scenario weights could not be resolved from its frozen config."))
-      tagList(
-        fluidRow(lapply(names(w), function(s)
-          column(2, numericInput(ns(paste0("w_", make.names(s))), s,
-                                 value = round(100 * w[[s]], 2), min = 0, max = 100,
-                                 step = 0.5, width = "100%")))),
-        div(style = "margin-bottom:8px",
-          actionButton(ns("w_run"), "Reprice at these weights", icon = icon("play"),
-                       class = "btn-sm btn-primary"),
-          actionButton(ns("w_reset"), "Reset to this run's weights",
-                       class = "btn-sm btn-outline-secondary", icon = icon("rotate-left"),
-                       style = "margin-left:8px")))
-    })
-
-    observeEvent(input$w_reset, {
-      w <- run_weights(); if (is.null(w)) return()
-      for (s in names(w))
-        updateNumericInput(session, paste0("w_", make.names(s)), value = round(100 * w[[s]], 2))
-    })
-
-    # The weights entered, in percent. An input left at its (rounded) starting
-    # value, or not drawn yet (Sensitivity opened first), is the run's own
-    # weight exactly, so the run's own weights reprice to the booked figure.
-    user_weights <- reactive({
+    # The weights set by hand on Macro & scenarios, in percent, or NULL when
+    # the weights are not set by hand. An input left at its (rounded) starting
+    # value is the run's own weight exactly, so the run's own weights reprice
+    # to the booked figure.
+    mev_weights_in <- reactive({
+      if (!identical(input$mev_wmode, "custom")) return(NULL)
       w <- run_weights(); if (is.null(w)) return(NULL)
       out <- vapply(names(w), function(s) {
-        v <- suppressWarnings(as.numeric(input[[paste0("w_", make.names(s))]]))
+        v <- suppressWarnings(as.numeric(input[[paste0("mevw_", make.names(s))]]))
         if (length(v) != 1 || is.na(v) || isTRUE(all.equal(v, round(100 * w[[s]], 2))))
           100 * w[[s]] else v
       }, numeric(1))
-      names(out) <- names(w)
-      out
+      stats::setNames(out, names(w))
     })
 
-    .reweight <- function(w) {
-      i <- inp_a(); d <- dat_a(); od <- .out_dir_for(input$run_a)
-      if (is.null(i) || isFALSE(i$ok) || is.null(d) || is.null(od)) return(NULL)
-      scenario_weights_stress(i, d, od, w / sum(w))
-    }
-    whatif_r <- eventReactive(input$w_run, {
-      w <- user_weights(); if (is.null(w) || sum(w) <= 0) return(NULL)
-      list(weights = w, r = withProgress(
-        message = "Rebuilding the PD curves and repricing the book\u2026", value = 0.5,
-        .reweight(w)))
-    }, ignoreInit = TRUE)
+    # Ten points onto each scenario in turn, from the weights set by hand or
+    # the run's own, each repriced as Rebuild and reprice does.
     sens_r <- eventReactive(input$sens_run, {
-      w <- user_weights(); i <- inp_a(); d <- dat_a(); od <- .out_dir_for(input$run_a)
-      if (is.null(w) || sum(w) <= 0 || is.null(i) || is.null(d) || is.null(od)) return(NULL)
-      withProgress(message = "Repricing the book once per scenario\u2026", value = 0.3,
-        scenario_weights_sensitivity(i, d, od, weights = w / sum(w)))
+      w <- mev_weights_in(); i <- inp_a(); d <- dat_a(); od <- .out_dir_for(input$run_a)
+      if (is.null(i) || isFALSE(i$ok) || is.null(d) || is.null(od)) return(NULL)
+      if (!is.null(w) && sum(w) <= 0) return(NULL)
+      withProgress(message = "Repricing the book once per scenario…", value = 0.3,
+        scenario_weights_sensitivity(i, d, od,
+                                     weights = if (is.null(w)) NULL else w / sum(w)))
     }, ignoreInit = TRUE)
-
-    output$t_whatif <- renderUI({
-      x <- whatif_r()
-      if (is.null(x)) return(p(class = "small-muted",
-        "Set the weights and press Reprice. At this run's own weights the result is the booked figure."))
-      r <- x$r
-      if (inherits(r, "stress_error"))
-        return(div(class = "alert alert-warning", attr(r, "msg")))
-      if (is.null(r)) return(.an_na("The run's engine inputs could not be read."))
-      raw_sum <- sum(x$weights)
-      tone <- if (r$delta > 0) "err" else if (r$delta < 0) "ok" else ""
-      by <- r$by_portfolio
-      tagList(
-        qdb_stats(list(
-          list(k = "This run", v = .an_money(r$before), tone = ""),
-          list(k = "At these weights", v = .an_money(r$after), tone = "accent"),
-          list(k = "Difference", v = .an_signed(r$delta), tone = tone),
-          list(k = "vs this run", v = if (r$before != 0) .an_pct(100 * r$delta / r$before) else "\u2014",
-               tone = tone),
-          list(k = "Weights entered", v = sprintf("%.2f%%", raw_sum),
-               tone = if (abs(raw_sum - 100) > 0.01) "warn" else "ok"))),
-        if (abs(raw_sum - 100) > 0.01)
-          div(class = "alert alert-info",
-              sprintf("Weights total %.2f%%; they have been normalised to 100%% for the calculation.",
-                      raw_sum)) else NULL,
-        if (!is.null(r$note)) div(class = "alert alert-info", r$note) else NULL,
-        qdb_reactable(
-          data.frame(Scenario = names(x$weights),
-                     `Weight used` = sprintf("%.2f%%", 100 * x$weights / raw_sum),
-                     `This run` = sprintf("%.2f%%", 100 * unname(run_weights()[names(x$weights)])),
-                     check.names = FALSE),
-          searchable = FALSE, page_size = 8),
-        if (!is.null(by) && nrow(by) > 0) tagList(h5(style = "margin-top:12px", "By portfolio"),
-          qdb_reactable(data.frame(Portfolio = by$portfolio, Contracts = by$contracts,
-                                   `This run` = .an_money(by$before),
-                                   `At these weights` = .an_money(by$after),
-                                   Change = .an_signed(by$change), check.names = FALSE),
-                        searchable = FALSE, page_size = 10)) else NULL)
-    })
 
     output$c_sens <- renderUI({
       sv <- sens_r()
-      if (is.null(sv)) return(p(class = "small-muted",
-        "Press the button to reprice the book with ten points moved onto each scenario in turn."))
+      if (is.null(sv)) return(NULL)
+      shocked <- any(vapply(unique(mev_base()$idx %||% integer(0)), function(k) {
+        v <- suppressWarnings(as.numeric(input[[paste0("mev_shock_", k)]]))
+        length(v) == 1 && !is.na(v) && v != 0
+      }, logical(1)))
+      head_ <- tagList(hr(), h5("Ten points onto each scenario"),
+        p(class = "small-muted", paste0(
+          "Each row adds 10 points to one scenario, taken from the others in proportion, and reprices the book on this run's own forecast",
+          if (shocked) " (the shifts above are not applied)" else "",
+          ". If the downturn were ten points more likely, what would be booked?")))
       if (!.an_echarts())
-        return(qdb_reactable(data.frame(Scenario = sv$scenario,
-                 Change = .an_money(sv$change)), searchable = FALSE))
+        return(tagList(head_, qdb_reactable(data.frame(Scenario = sv$scenario,
+                 Change = .an_money(sv$change)), searchable = FALSE)))
       sv <- sv[order(sv$change), , drop = FALSE]
       cj <- htmlwidgets::JS(sprintf("function(p){var c=[%s]; return c[p.dataIndex];}",
         paste0("'", ifelse(sv$change >= 0, .AN_COL$err, .AN_COL$ok), "'", collapse = ",")))
-      echarts4r::e_charts(sv, scenario) |>
-        echarts4r::e_bar(change, legend = FALSE, bar_width = "55%",
-                         itemStyle = list(color = cj)) |>
-        echarts4r::e_flip_coords() |>
-        echarts4r::e_x_axis(axisLabel = list(formatter = .an_m_axis())) |>
-        echarts4r::e_tooltip() |>
-        echarts4r::e_grid(left = 150, right = 30, top = 10, bottom = 30)
+      tagList(head_,
+        echarts4r::e_charts(sv, scenario) |>
+          echarts4r::e_bar(change, legend = FALSE, bar_width = "55%",
+                           itemStyle = list(color = cj)) |>
+          echarts4r::e_flip_coords() |>
+          echarts4r::e_x_axis(axisLabel = list(formatter = .an_m_axis())) |>
+          echarts4r::e_tooltip() |>
+          echarts4r::e_grid(left = 150, right = 30, top = 10, bottom = 30))
     })
 
     output$t_sens <- reactable::renderReactable({
@@ -1565,7 +1476,8 @@ mod_analytics_server <- function(id, runs_root = NULL) {
           column(2, numericInput(ns(paste0("mevw_", make.names(s2))), s2,
                                  value = def(s2), min = 0, max = 100, step = 0.5,
                                  width = "100%")))),
-        div(class = "small-muted", "Normalised to 100% before use."))
+        div(class = "small-muted",
+            "They start at the weights this run is priced with; left there, they reprice to the booked figure exactly. Normalised to 100% before use."))
     })
 
     mev_result <- eventReactive(input$mev_run, {
@@ -1582,14 +1494,10 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         if (length(v) == 1 && !is.na(v) && v != 0) shock[[as.character(k)]] <- v
       }
       wm <- input$mev_wmode %||% "auto"
-      wts <- NULL
-      if (identical(wm, "custom")) {
-        sc <- names(run_weights())
-        wts <- stats::setNames(vapply(sc, function(s2) {
-          v <- suppressWarnings(as.numeric(input[[paste0("mevw_", make.names(s2))]]))
-          if (length(v) != 1 || is.na(v)) 0 else v
-        }, numeric(1)), sc)
-      }
+      wts <- if (identical(wm, "custom")) mev_weights_in() else NULL
+      if (identical(wm, "custom") && (is.null(wts) || sum(wts) <= 0))
+        return(structure(list(), class = "stress_error",
+                         msg = "Set at least one scenario weight above zero."))
       mev_stress(i, d, .out_dir_for(input$run_a), mev_new = newtb, shock = shock,
                  weight_mode = wm, weights = wts)
     }, ignoreInit = TRUE, ignoreNULL = TRUE)
@@ -1650,18 +1558,23 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     })
 
     # ---- roll forward ------------------------------------------------------
-    output$rf_scope <- renderUI({
+    # The portfolios a sensitivity or the roll forward reaches: the internally
+    # rated ones unless chosen otherwise.
+    .scope_picker <- function(id) {
       d <- dat_a(); i <- inp_a(); if (is.null(d)) return(NULL)
       pf <- sort(unique(d$portfolio[nzchar(d$portfolio) & !is.na(d$portfolio)]))
       int <- internal_portfolios(i, d) %||% pf
       ext <- external_portfolios(i, d)
       tagList(
-        selectInput(ns("rf_portfolios"), "Scope", choices = pf, selected = int,
+        selectInput(ns(id), "Scope", choices = pf, selected = int,
                     multiple = TRUE, width = "100%"),
         if (length(ext) > 0) div(class = "small-muted",
           sprintf("%s excluded by default \u2014 externally rated, so they do not price against the internal PD curves.",
                   paste(ext, collapse = ", "))) else NULL)
-    })
+    }
+    output$rf_scope <- renderUI(.scope_picker("rf_portfolios"))
+    output$rv_scope <- renderUI(.scope_picker("rv_portfolios"))
+    output$sw_scope <- renderUI(.scope_picker("sw_portfolios"))
 
     rf_result <- eventReactive(input$rf_run, {
       i <- inp_a(); d <- dat_a()
@@ -1726,11 +1639,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
       d <- dat_a()
       ext <- external_portfolios(inp_a(), d)
       L <- tornado_levers()
-      keymap <- c(pd_multiplier = "PD multiplier", rating_notches = "Rating notches",
-                  collateral_pct = "Collateral %", exposure_pct = "Exposure %",
-                  lgd_base = "LGD base", lgd_floor = "LGD floor",
-                  dpd_threshold = "DPD threshold", default_top_n = "Largest N default",
-                  contagion = "Contagion", tasdeer_collective = "Tasdeer collective")
+      keymap <- .TN_KEYS
       rows <- lapply(seq_along(L), function(k) {
         x <- L[[k]]
         fid <- ns(paste0("tn_val_", k))
@@ -1752,7 +1661,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             do.call(fluidRow, rows)))
     })
 
-    # ---- tornado ---    # ---- tornado -----------------------------------------------------------
+    # ---- each lever ----------------------------------------------------------
     tn_result <- eventReactive(input$tn_run, {
       i <- inp_a(); d <- dat_a()
       if (is.null(i) || isFALSE(i$ok) || is.null(d)) return(NULL)
@@ -1764,10 +1673,15 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         x <- L[[k]]
         v <- input[[paste0("tn_val_", k)]]
         if (!is.null(v) && length(v) == 1 && !is.na(v)) {
-          x$value <- if (is.logical(x$value)) isTRUE(v) else as.numeric(v)
-          x$label <- sprintf("%s = %s", sub(" .*$", "", x$label),
-                             if (is.logical(x$value)) (if (x$value) "on" else "off")
-                             else format(x$value))
+          nv <- if (is.logical(x$value)) isTRUE(v) else as.numeric(v)
+          # a move left as it is keeps its own name ("Largest 5 default");
+          # an edited one says what it was set to
+          if (!isTRUE(all.equal(nv, x$value))) {
+            x$value <- nv
+            x$label <- sprintf("%s = %s", unname(.TN_KEYS[x$key] %||% x$key),
+                               if (is.logical(nv)) (if (nv) "on" else "off")
+                               else format(nv))
+          }
         }
         x
       })[keep]
@@ -1817,19 +1731,6 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     })
 
     # ---- reverse stress ----------------------------------------------------
-    output$rv_scope <- renderUI({
-      d <- dat_a(); i <- inp_a(); if (is.null(d)) return(NULL)
-      pf <- sort(unique(d$portfolio[nzchar(d$portfolio) & !is.na(d$portfolio)]))
-      int <- internal_portfolios(i, d) %||% pf
-      ext <- external_portfolios(i, d)
-      tagList(
-        selectInput(ns("rv_portfolios"), "Scope", choices = pf, selected = int,
-                    multiple = TRUE, width = "100%"),
-        if (length(ext) > 0) div(class = "small-muted",
-          sprintf("%s excluded by default \u2014 externally rated, so they do not price against the internal PD curves.",
-                  paste(ext, collapse = ", "))) else NULL)
-    })
-
     rv_result <- eventReactive(input$rv_run, {
       i <- inp_a(); d <- dat_a()
       if (is.null(i) || isFALSE(i$ok) || is.null(d)) return(NULL)
@@ -1861,7 +1762,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
                     reach$lever[1], tgt))
       else div(class = "alert alert-warning", style = "margin-top:10px",
             icon("triangle-exclamation"),
-            sprintf(" No single lever reaches +%.0f%% on its own. A combination would be needed \u2014 use a stress package.", tgt))
+            sprintf(" No single lever reaches +%.0f%% on its own. A combination would be needed \u2014 build it on Stress test.", tgt))
       tagList(lead,
         qdb_reactable(data.frame(
           Lever = r$lever,
@@ -1872,148 +1773,316 @@ mod_analytics_server <- function(id, runs_root = NULL) {
           check.names = FALSE), searchable = FALSE, page_size = 10))
     })
 
-    # ---- stress packages ---------------------------------------------------
-    stp_list <- reactiveVal(list(stress_default("Stress 1")))
-    stp_next <- reactiveVal(2)
+    # ---- stress test -------------------------------------------------------
+    # One editor for every stress: a package, a what-if on named customers
+    # and a staging-policy change are all a scope and the levers moved for it,
+    # priced by stress_apply(). Each package carries a uid, so its inputs keep
+    # their values when another is added or removed. A threshold or LGD
+    # parameter left at the run's own is stored as NULL (the run's own), so a
+    # saved package follows whichever run it is applied to.
+    stp_list <- reactiveVal(NULL)
+    stp_uid <- reactiveVal(0L)
+    .stp_new <- function(sp) {
+      u <- isolate(stp_uid()) + 1L; stp_uid(u)
+      d <- stress_default(sp$name %||% "Stress")
+      for (k in names(sp)) d[k] <- list(sp[[k]])
+      d$.uid <- u
+      d
+    }
+    .stp_clean <- function(sp) { sp$.uid <- NULL; sp }
+    .stp_ids <- function(x) {
+      x <- trimws(unlist(strsplit(as.character(unlist(x %||% character(0))), "[,;]")))
+      x[nzchar(x)]
+    }
+    stp_run_thr <- reactive(staging_threshold(.out_dir_for(input$run_a)))
+    .scen_names <- function(out_dir) {
+      if (is.null(out_dir)) return(character(0))
+      f <- list.files(out_dir, pattern = "^FinalEclReport_scenario_.*\\.csv$")
+      sort(gsub("_", " ", sub("\\.csv$", "", sub("^FinalEclReport_scenario_", "", f))))
+    }
+
+    # one package's fields back off the screen
+    .stp_read <- function(cur) {
+      u <- cur$.uid
+      key <- function(nm) sprintf("stp_%s_%d", nm, u)
+      f <- function(nm, default) { v <- input[[key(nm)]]; if (is.null(v)) default else v }
+      # A cleared multi-select sends NULL. Once the package's inputs are in the
+      # browser (its name box always sends a value) that is an empty choice;
+      # before then it is not drawn yet, and the package's own value stands.
+      multi <- function(nm, default) {
+        v <- input[[key(nm)]]
+        if (!is.null(v)) v else if (!is.null(input[[key("name")]])) character(0) else default
+      }
+      num <- function(nm, default) {
+        v <- suppressWarnings(as.numeric(f(nm, default)))
+        if (length(v) != 1 || is.na(v)) default else v
+      }
+      run_thr <- stp_run_thr(); ctx <- inp_a()$ctx
+      thr <- num("thr", cur$dpd_threshold %||% run_thr)
+      lgdb <- num("lgdb", cur$lgd_base %||% ctx$lgd_base)
+      lgdf <- num("lgdf", cur$lgd_floor %||% ctx$lgd_floor)
+      to <- as.character(f("to", if (is.null(cur$stage_to)) "" else cur$stage_to))
+      own <- function(v, run) if (is.null(v) || isTRUE(all.equal(v, run))) NULL else v
+      list(name = { x <- trimws(f("name", cur$name)); if (nzchar(x)) x else cur$name },
+           portfolios = as.character(unlist(multi("pf", cur$portfolios))),
+           stages = as.integer(unlist(multi("st", cur$stages))),
+           customers = .stp_ids(f("cust", paste(.stp_ids(cur$customers), collapse = ", "))),
+           dpd_threshold = own(thr, run_thr),
+           contagion = isTRUE(f("contagion", cur$contagion)),
+           tasdeer_collective = isTRUE(f("tasdeer", cur$tasdeer_collective)),
+           watchlist_triggers = isTRUE(f("watch", cur$watchlist_triggers)),
+           local_triggers = isTRUE(f("local", cur$local_triggers)),
+           stage_to = if (!nzchar(to) || to == "0") NULL else as.integer(to),
+           default_top_n = as.integer(num("topn", cur$default_top_n)),
+           pd_multiplier = num("pd", cur$pd_multiplier),
+           pd_scenario = as.character(f("scen", cur$pd_scenario %||% "")),
+           rating_notches = as.integer(num("notch", cur$rating_notches)),
+           lgd_base = own(lgdb, ctx$lgd_base),
+           lgd_floor = own(lgdf, ctx$lgd_floor),
+           collateral_pct = num("coll", cur$collateral_pct),
+           exposure_pct = num("exp", cur$exposure_pct),
+           maturity_years = num("mat", cur$maturity_years),
+           .uid = u)
+    }
+    .stp_live <- function() lapply(stp_list() %||% list(), .stp_read)
 
     observeEvent(input$stp_add, {
-      n <- stp_next(); stp_list(c(stp_list(), list(stress_default(sprintf("Stress %d", n)))))
-      stp_next(n + 1)
+      l <- .stp_live()
+      stp_list(c(l, list(.stp_new(list(
+        name = sprintf("Stress %d", length(l) + 1),
+        portfolios = internal_portfolios(inp_a(), dat_a()) %||% character(0))))))
+    })
+    observeEvent(input$stp_std, {
+      std <- standard_packages(internal_portfolios(inp_a(), dat_a()) %||% character(0))
+      stp_list(c(.stp_live(), lapply(std, .stp_new)))
     })
     observeEvent(input$stp_remove_click, {
-      nm <- input$stp_remove_click; l <- stp_list()
-      if (length(l) > 1) stp_list(Filter(function(x) !identical(x$name, nm), l))
+      u <- suppressWarnings(as.integer(input$stp_remove_click)); l <- .stp_live()
+      if (length(l) > 1) stp_list(Filter(function(x) !identical(x$.uid, u), l))
     })
     observeEvent(input$stp_load, {
       saved <- tryCatch(stress_read(), error = function(e) list())
       if (length(saved) == 0) {
-        showNotification("No saved stress packages found.", type = "warning")
+        showNotification("No saved stresses found.", type = "warning")
       } else {
-        stp_list(saved)
+        stp_list(lapply(saved, .stp_new))
         showNotification(sprintf("Loaded %d package(s).", length(saved)), type = "message")
       }
     })
     observeEvent(input$stp_save, {
-      live <- lapply(seq_along(stp_list()), function(k) .stp_read(k, stp_list()[[k]]))
-      stp_list(live)
-      ok <- tryCatch({ stress_write(live); TRUE }, error = function(e) FALSE)
+      live <- .stp_live(); stp_list(live)
+      ok <- tryCatch({ stress_write(lapply(live, .stp_clean)); TRUE },
+                     error = function(e) FALSE)
       showNotification(if (ok) sprintf("Saved %d package(s).", length(live))
                        else "Could not write config/stress_packages.yml.",
                        type = if (ok) "message" else "error")
     })
 
-    # read one package's fields back off the screen
-    .stp_read <- function(k, cur) {
-      f <- function(nm, default) {
-        v <- input[[paste0("stp_", nm, "_", k)]]
-        if (is.null(v)) default else v
-      }
-      nnum <- function(nm, default) {
-        v <- suppressWarnings(as.numeric(f(nm, default)))
-        if (length(v) != 1 || is.na(v)) default else v
-      }
-      list(name = { x <- trimws(f("name", cur$name)); if (nzchar(x)) x else cur$name },
-           portfolios = f("pf", cur$portfolios),
-           dpd_threshold = nnum("thr", cur$dpd_threshold),
-           contagion = isTRUE(f("contagion", cur$contagion)),
-           tasdeer_collective = isTRUE(f("tasdeer", cur$tasdeer_collective)),
-           watchlist_triggers = isTRUE(f("watch", cur$watchlist_triggers)),
-           local_triggers = isTRUE(f("local", cur$local_triggers)),
-           pd_multiplier = nnum("pd", cur$pd_multiplier),
-           lgd_base = nnum("lgdb", cur$lgd_base),
-           lgd_floor = nnum("lgdf", cur$lgd_floor),
-           collateral_pct = nnum("coll", cur$collateral_pct),
-           exposure_pct = nnum("exp", cur$exposure_pct),
-           rating_notches = as.integer(nnum("notch", cur$rating_notches)),
-           default_top_n = as.integer(nnum("topn", cur$default_top_n)))
-    }
-
     output$stp_note <- renderUI({
       ext <- external_portfolios(inp_a(), dat_a())
       if (length(ext) == 0) return(NULL)
       div(class = "small-muted", style = "margin:2px 0 8px",
-          sprintf("Scoped to the internally-rated portfolios by default. %s are externally rated and do not price against the internal PD curves, so a stress leaves them unchanged.",
+          sprintf("A new package is scoped to the internally rated portfolios. %s are externally rated: their PD curves are the agency scale's, so a rating or PD lever does not reach them.",
                   paste(ext, collapse = ", ")))
     })
 
     output$stp_editor <- renderUI({
-      d <- dat_a(); l <- stp_list()
-      pf <- if (is.null(d)) character(0) else
-        sort(unique(d$portfolio[nzchar(d$portfolio) & !is.na(d$portfolio)]))
-      int_pf <- internal_portfolios(inp_a(), d) %||% pf
-      ext_pf <- external_portfolios(inp_a(), d)
-      tagList(lapply(seq_along(l), function(k) {
-        cur <- isolate(.stp_read(k, l[[k]]))
-        fid <- function(nm) ns(paste0("stp_", nm, "_", k))
+      d <- dat_a(); i <- inp_a()
+      if (is.null(i) || isFALSE(i$ok) || is.null(d))
+        return(.an_na("The run's engine inputs could not be read, so the book cannot be repriced."))
+      l <- stp_list()
+      if (is.null(l)) {
+        # first visit: one package on the internally rated book
+        l <- list(.stp_new(list(name = "Stress 1",
+                                portfolios = internal_portfolios(i, d) %||% character(0))))
+        stp_list(l)
+      }
+      pf <- sort(unique(d$portfolio[nzchar(d$portfolio) & !is.na(d$portfolio)]))
+      scen <- .scen_names(.out_dir_for(input$run_a))
+      run_thr <- stp_run_thr()
+      tagList(lapply(l, function(sp) {
+        cur <- isolate(.stp_read(sp))         # keep whatever is on screen now
+        u <- cur$.uid
+        fid <- function(nm) ns(sprintf("stp_%s_%d", nm, u))
+        lab <- function(x, sub = NULL) div(style = "margin:8px 0 2px", tags$strong(x),
+          if (!is.null(sub)) span(class = "small-muted", paste0(" — ", sub)) else NULL)
         div(class = "qdb-card", style = "padding:12px;margin-bottom:8px",
           fluidRow(
-            column(5, textInput(fid("name"), NULL, value = cur$name,
-                                placeholder = "Package name", width = "100%")),
-            column(5, selectInput(fid("pf"), NULL, choices = pf,
-                                  selected = if (length(cur$portfolios) > 0) cur$portfolios
-                                             else int_pf,
-                                  multiple = TRUE, width = "100%")),
+            column(10, textInput(fid("name"), NULL, value = cur$name,
+                                 placeholder = "Package name", width = "100%")),
             column(2, div(style = "text-align:right",
-              actionButton(ns("stp_remove_click"), "Remove", class = "btn-sm btn-outline-danger",
-                onclick = sprintf("Shiny.setInputValue('%s','%s',{priority:'event'})",
-                                  ns("stp_remove_click"), cur$name))))),
+              tags$button(type = "button", class = "btn btn-sm btn-outline-danger",
+                onclick = sprintf("Shiny.setInputValue('%s', %d, {priority:'event'})",
+                                  ns("stp_remove_click"), u),
+                "Remove")))),
+          lab("Who", "every contract in these portfolios, stages and customers; leave one empty not to narrow it"),
           fluidRow(
-            column(2, numericInput(fid("pd"), "PD multiplier", value = cur$pd_multiplier,
+            column(5, selectInput(fid("pf"), "Portfolios", choices = pf,
+                                  selected = intersect(cur$portfolios, pf),
+                                  multiple = TRUE, width = "100%")),
+            column(2, selectInput(fid("st"), "Stages", choices = c(1, 2, 3),
+                                  selected = cur$stages, multiple = TRUE, width = "100%")),
+            column(5, textInput(fid("cust"), "Customer ids",
+                                value = paste(cur$customers, collapse = ", "),
+                                placeholder = "comma separated; a name with spaces is one id",
+                                width = "100%"))),
+          uiOutput(ns(sprintf("stp_info_%d", u))),
+          lab("Staging"),
+          fluidRow(
+            column(3, numericInput(fid("thr"), "Stage 2 DPD threshold",
+                                   value = cur$dpd_threshold %||% run_thr,
+                                   min = 0, max = 365, step = 5, width = "100%")),
+            column(3, selectInput(fid("to"), "Move to stage",
+                                  choices = c("Unchanged" = "", "1" = "1", "2" = "2", "3" = "3"),
+                                  selected = as.character(cur$stage_to %||% ""),
+                                  width = "100%")),
+            column(3, numericInput(fid("topn"), "Largest N default",
+                                   value = cur$default_top_n, min = 0, max = 100, step = 1,
+                                   width = "100%"))),
+          div(style = "display:flex;gap:18px;flex-wrap:wrap",
+            checkboxInput(fid("contagion"), "Contagion", cur$contagion),
+            checkboxInput(fid("tasdeer"), "Tasdeer collective", cur$tasdeer_collective),
+            checkboxInput(fid("watch"), "Watchlist triggers", cur$watchlist_triggers),
+            checkboxInput(fid("local"), "Local flags trigger", cur$local_triggers)),
+          lab("PD and rating"),
+          fluidRow(
+            column(3, numericInput(fid("pd"), "PD multiplier", value = cur$pd_multiplier,
                                    min = 0, max = 10, step = 0.05, width = "100%")),
-            column(2, numericInput(fid("lgdb"), "LGD base", value = cur$lgd_base,
+            column(4, selectInput(fid("scen"), "PD scenario",
+                                  choices = c("Weighted, as the run" = "", scen),
+                                  selected = cur$pd_scenario, width = "100%")),
+            column(3, numericInput(fid("notch"), "Rating notches", value = cur$rating_notches,
+                                   min = -10, max = 20, step = 1, width = "100%"))),
+          lab("LGD, collateral, exposure and term"),
+          fluidRow(
+            column(2, numericInput(fid("lgdb"), "LGD base",
+                                   value = cur$lgd_base %||% i$ctx$lgd_base,
                                    min = 0, max = 1, step = 0.01, width = "100%")),
-            column(2, numericInput(fid("lgdf"), "LGD floor", value = cur$lgd_floor,
+            column(2, numericInput(fid("lgdf"), "LGD floor",
+                                   value = cur$lgd_floor %||% i$ctx$lgd_floor,
                                    min = 0, max = 1, step = 0.05, width = "100%")),
             column(2, numericInput(fid("coll"), "Collateral %", value = cur$collateral_pct,
-                                   min = 0, max = 200, step = 5, width = "100%")),
+                                   min = 0, max = 300, step = 5, width = "100%")),
             column(2, numericInput(fid("exp"), "Exposure %", value = cur$exposure_pct,
                                    min = 0, max = 300, step = 5, width = "100%")),
-            column(2, numericInput(fid("notch"), "Rating notches", value = cur$rating_notches,
-                                   min = -10, max = 10, step = 1, width = "100%"))),
-          fluidRow(
-            column(2, numericInput(fid("topn"), "Default largest N", value = cur$default_top_n,
-                                   min = 0, max = 100, step = 1, width = "100%")),
-            column(2, numericInput(fid("thr"), "DPD threshold", value = cur$dpd_threshold,
-                                   min = 0, max = 90, step = 5, width = "100%")),
-            column(8, div(style = "margin-top:24px;display:flex;gap:18px;flex-wrap:wrap",
-              checkboxInput(fid("contagion"), "Contagion", cur$contagion),
-              checkboxInput(fid("tasdeer"), "Tasdeer collective", cur$tasdeer_collective),
-              checkboxInput(fid("watch"), "Watchlist triggers", cur$watchlist_triggers),
-              checkboxInput(fid("local"), "Local flags trigger", cur$local_triggers)))))
+            column(3, numericInput(fid("mat"), "Extend maturity (years)",
+                                   value = cur$maturity_years, min = -10, max = 30,
+                                   step = 0.25, width = "100%"))))
       }))
+    })
+
+    # The customers named, as they stand, while the ids are typed: read the
+    # way the stress will read them, so a mistyped id shows before anything
+    # is priced. One output per package, each on its own id field.
+    observe({
+      for (sp in stp_list() %||% list()) local({
+        u <- sp$.uid
+        output[[sprintf("stp_info_%d", u)]] <- renderUI({
+          d <- dat_a()
+          ids <- input[[sprintf("stp_cust_%d", u)]]
+          if (is.null(d) || is.null(ids) || !nzchar(trimws(ids))) return(NULL)
+          lk <- customer_lookup(d, ids, spaces = FALSE)
+          if (is.null(lk)) return(NULL)
+          tagList(
+            if (!is.null(lk$found)) qdb_reactable(data.frame(
+                Customer = lk$found$customer, Portfolios = lk$found$portfolios,
+                Rating = lk$found$rating, Stage = lk$found$stage,
+                Contracts = lk$found$contracts,
+                Exposure = .an_money(lk$found$exposure),
+                ECL = .an_money(lk$found$ecl),
+                `ECL coverage %` = .an_pct0(lk$found$coverage),
+                check.names = FALSE), searchable = FALSE, page_size = 5) else NULL,
+            if (length(lk$missing) > 0)
+              div(class = "small-muted", style = "color:#dc2626",
+                  sprintf("Not in this run: %s", paste(lk$missing, collapse = ", ")))
+            else NULL)
+        })
+      })
     })
 
     stp_result <- eventReactive(input$stp_run, {
       i <- inp_a(); d <- dat_a()
       if (is.null(i) || isFALSE(i$ok) || is.null(d)) return(NULL)
-      live <- lapply(seq_along(stp_list()), function(k) .stp_read(k, stp_list()[[k]]))
-      stp_list(live)
+      live <- .stp_live(); stp_list(live)
       od <- .out_dir_for(input$run_a)
-      cmp <- stress_compare(i, d, od, live)
-      out <- list(compare = cmp,
-                  detail = lapply(live, function(sp) stress_apply(i, d, od, sp)),
-                  specs = live)
-      if (is.null(cmp)) attr(out, "failed") <- TRUE
-      out
+      detail <- withProgress(message = "Repricing the book…", value = 0.3,
+        lapply(live, function(sp) stress_apply(i, d, od, .stp_clean(sp))))
+      list(detail = detail, specs = live)
     }, ignoreInit = TRUE, ignoreNULL = TRUE)
+
+    # One stress's result: the tiles, then by portfolio, the stage moves and
+    # one customer table.
+    .stp_detail <- function(x) {
+      tone <- if (x$delta > 0) "err" else if (x$delta < 0) "ok" else ""
+      tagList(
+        qdb_stats(list(
+          list(k = "Provision now", v = .an_money(x$before), tone = ""),
+          list(k = "Under this stress", v = .an_money(x$after), tone = "accent"),
+          list(k = "Change", v = .an_signed(x$delta), tone = tone),
+          list(k = "% change", v = sprintf("%+.2f%%", 100 * x$delta / max(x$before, 1)),
+               tone = tone),
+          list(k = "Contracts in scope", v = .an_money(x$scoped), tone = ""),
+          list(k = "Contracts re-staged", v = .an_money(x$moved), tone = "warn"))),
+        if (length(x$notes)) p(class = "small-muted", paste0(paste(x$notes, collapse = "; "), ".")) else NULL,
+        if (abs(x$delta) < 1e-6)
+          div(class = "alert alert-secondary", icon("circle-info"),
+              " Nothing in this stress changes the provision.") else NULL,
+        if (!is.null(x$by_portfolio)) tagList(h6(style = "margin-top:10px", "By portfolio"),
+          qdb_reactable(data.frame(
+            Portfolio = x$by_portfolio$portfolio, Moved = x$by_portfolio$moved,
+            `ECL before` = .an_money(x$by_portfolio$before),
+            `ECL after` = .an_money(x$by_portfolio$after),
+            Change = .an_signed(x$by_portfolio$change), check.names = FALSE),
+            searchable = FALSE, page_size = 8)) else NULL,
+        # Stage moves stay as a summary: an aggregate BY MOVE, which the
+        # customer table below does not give.
+        if (!is.null(x$migration)) tagList(h6("Stage moves"),
+          qdb_reactable(data.frame(Move = x$migration$move,
+            Contracts = x$migration$contracts, Customers = x$migration$customers,
+            Exposure = .an_money(x$migration$exposure),
+            `ECL change` = .an_money(x$migration$ecl_change), check.names = FALSE),
+            searchable = FALSE, page_size = 6)) else NULL,
+        # ONE customer table: the N largest when "largest N default" was used,
+        # with their outcome; otherwise whoever the stress moved.
+        if (!is.null(x$defaulted_rows)) tagList(
+          h6(sprintf("The %s largest customers selected", .an_money(nrow(x$defaulted_rows)))),
+          .drill_customers(x$defaulted_rows, page = 12))
+        else if (!is.null(x$movers)) {
+          aff <- x$movers[x$movers$change != 0, , drop = FALSE]
+          if (nrow(aff) == 0) NULL else tagList(
+            h6(sprintf("Customers affected (%s)", .an_money(nrow(aff)))),
+            .drill_customers(aff, page = 12))
+        } else NULL)
+    }
 
     output$stp_result <- renderUI({
       i <- inp_a()
-      if (is.null(i) || isFALSE(i$ok))
-        return(.an_na("The run's engine inputs could not be read."))
+      if (is.null(i) || isFALSE(i$ok)) return(NULL)
       r <- stp_result()
       if (is.null(r))
         return(div(class = "alert alert-secondary", style = "margin-top:10px",
-          icon("circle-info"), " Define one or more packages, then Run all."))
-      if (isTRUE(attr(r, "failed")))
-        return(.an_na(stress_diagnosis(inp_a(), dat_a(), .out_dir_for(input$run_a))))
-      bad <- Filter(function(x) stress_failed(x), r$detail %||% list())
-      if (length(bad) > 0) return(.an_na(stress_error_message(bad[[1]])))
-      if (isTRUE(attr(r, "failed")))
-        return(.an_na(stress_diagnosis(inp_a(), dat_a(), .out_dir_for(input$run_a))))
-      cmp <- r$compare
-      if (is.null(cmp))
-        return(.an_na(stress_diagnosis(inp_a(), dat_a(), .out_dir_for(input$run_a))))
+          icon("circle-info"), " Set up one or more stresses, then Run."))
+      ok <- !vapply(r$detail, function(x) is.null(x) || stress_failed(x), logical(1))
+      fails <- lapply(which(!ok), function(k) {
+        x <- r$detail[[k]]
+        div(class = "alert alert-warning", style = "margin-top:8px",
+            icon("triangle-exclamation"), sprintf(" %s: %s", r$specs[[k]]$name,
+            if (is.null(x)) stress_diagnosis(inp_a(), dat_a(), .out_dir_for(input$run_a))
+            else stress_error_message(x)))
+      })
+      det <- r$detail[ok]; sps <- r$specs[ok]
+      if (length(det) == 0) return(tagList(fails))
+      if (length(det) == 1) return(tagList(fails, .stp_detail(det[[1]])))
+      cmp <- data.frame(
+        name = vapply(sps, function(s) s$name %||% "(unnamed)", character(1)),
+        before = vapply(det, `[[`, numeric(1), "before"),
+        after = vapply(det, `[[`, numeric(1), "after"),
+        delta = vapply(det, `[[`, numeric(1), "delta"),
+        scoped = vapply(det, function(x) as.numeric(x$scoped), numeric(1)),
+        moved = vapply(det, function(x) as.numeric(x$moved), numeric(1)),
+        stringsAsFactors = FALSE)
+      cmp$pct <- 100 * cmp$delta / pmax(cmp$before, 1)
+      ord <- order(-cmp$delta)
       chart <- if (.an_echarts()) {
         x <- cmp[order(cmp$delta), , drop = FALSE]
         cj <- htmlwidgets::JS(sprintf("function(p){var c=[%s]; return c[p.dataIndex];}",
@@ -2024,171 +2093,77 @@ mod_analytics_server <- function(id, runs_root = NULL) {
           echarts4r::e_flip_coords() |>
           echarts4r::e_x_axis(axisLabel = list(formatter = .an_m_axis())) |>
           echarts4r::e_tooltip() |>
-          echarts4r::e_grid(left = 150, right = 30, top = 10, bottom = 30)
+          echarts4r::e_grid(left = 190, right = 30, top = 10, bottom = 30)
       } else NULL
-      detail <- lapply(seq_along(r$detail), function(k) {
-        x <- r$detail[[k]]; sp <- r$specs[[k]]
-        if (is.null(x)) return(NULL)
-        tagList(hr(), h5(sp$name %||% "(unnamed)"),
-          if (length(x$notes)) p(class = "small-muted", paste(x$notes, collapse = "; ")) else NULL,
-          qdb_stats(list(
-            list(k = "Provision", v = .an_money(x$after), tone = "accent"),
-            list(k = "Change", v = .an_money(x$delta),
-                 tone = if (x$delta > 0) "err" else if (x$delta < 0) "ok" else ""),
-            list(k = "% change", v = sprintf("%+.2f%%", 100 * x$delta / max(x$before, 1)),
-                 tone = if (x$delta > 0) "err" else "ok"),
-            list(k = "Contracts re-staged", v = .an_money(x$moved), tone = "warn"))),
-          if (!is.null(x$by_portfolio)) qdb_reactable(data.frame(
-            Portfolio = x$by_portfolio$portfolio, Moved = x$by_portfolio$moved,
-            `ECL before` = .an_money(x$by_portfolio$before),
-            `ECL after` = .an_money(x$by_portfolio$after),
-            Change = .an_money(x$by_portfolio$change), check.names = FALSE),
-            searchable = FALSE, page_size = 6) else NULL,
-          # Stage moves stay as a summary: it is an aggregate BY MOVE, which the
-          # customer table below does not give. No drill-down here, because that
-          # would repeat the same customers a third time.
-          if (!is.null(x$migration)) tagList(
-            h6("Stage moves"),
-            qdb_reactable(data.frame(Move = x$migration$move,
-              Contracts = x$migration$contracts, Customers = x$migration$customers,
-              Exposure = .an_money(x$migration$exposure),
-              `ECL change` = .an_money(x$migration$ecl_change), check.names = FALSE),
-              searchable = FALSE, page_size = 6)) else NULL,
-          # ONE customer table. Previously "forced to default", "stage moves"
-          # drill-down and "largest movements" all listed the same names under
-          # three headings.
-          # When "default largest N" was used, show exactly those N with their
-          # outcome; otherwise show whoever the package moved.
-          if (!is.null(x$defaulted_rows)) tagList(
-            h6(sprintf("The %s largest customers selected", .an_money(nrow(x$defaulted_rows)))),
-            .drill_customers(x$defaulted_rows, page = 12))
-          else if (!is.null(x$movers)) {
-            aff <- x$movers[x$movers$change != 0, , drop = FALSE]
-            if (nrow(aff) == 0) NULL else tagList(
-              h6(sprintf("Customers affected (%s)", .an_money(nrow(aff)))),
-              .drill_customers(aff, page = 12))
-          } else NULL)
-      })
-      tagList(
-        h5("Packages compared"), chart,
-        qdb_reactable(data.frame(Package = cmp$name,
-          `Provision before` = .an_money(cmp$before),
-          `Provision after` = .an_money(cmp$after),
-          Change = .an_money(cmp$delta),
-          `% change` = sprintf("%+.2f%%", cmp$pct),
-          `Re-staged` = cmp$moved, check.names = FALSE),
-          searchable = FALSE, page_size = 10),
-        detail)
+      tagList(fails,
+        h5("Stresses compared"), chart,
+        p(class = "small-muted",
+          "Each priced on its own from the same run, so the changes are comparable; they do not add up."),
+        qdb_reactable(data.frame(Package = cmp$name[ord],
+          `Provision before` = .an_money(cmp$before[ord]),
+          `Provision after` = .an_money(cmp$after[ord]),
+          Change = .an_signed(cmp$delta[ord]),
+          `% change` = sprintf("%+.2f%%", cmp$pct[ord]),
+          `In scope` = .an_money(cmp$scoped[ord]),
+          `Re-staged` = .an_money(cmp$moved[ord]), check.names = FALSE),
+          searchable = FALSE, page_size = 12),
+        lapply(ord, function(k) tagList(hr(), h5(cmp$name[k]), .stp_detail(det[[k]]))))
     })
 
-    # ---- staging policy stress ---------------------------------------------
-    output$sp_scope <- renderUI({
-      d <- dat_a(); i <- inp_a(); if (is.null(d)) return(NULL)
-      pf <- sort(unique(d$portfolio[nzchar(d$portfolio) & !is.na(d$portfolio)]))
-      int <- internal_portfolios(i, d) %||% pf
-      ext <- external_portfolios(i, d)
-      tagList(
-        selectInput(ns("sp_portfolios"), "Scope", choices = pf, selected = int,
-                    multiple = TRUE, width = "100%"),
-        if (length(ext) > 0) div(class = "small-muted",
-          sprintf("%s excluded by default \u2014 externally rated, so they do not price against the internal PD curves.",
-                  paste(ext, collapse = ", "))) else NULL)
-    })
-
-    sp_args <- reactive(list(
-      dpd_threshold = { v <- suppressWarnings(as.numeric(input$sp_thr))
-                        if (length(v) != 1 || is.na(v)) 60 else v },
-      contagion = isTRUE(input$sp_contagion),
-      tasdeer_collective = isTRUE(input$sp_tasdeer),
-      watchlist_triggers = isTRUE(input$sp_watch),
-      local_triggers = isTRUE(input$sp_local),
-      portfolios = input$sp_portfolios))
-
-    sp_result <- eventReactive(input$sp_apply, {
+    # ---- staging threshold sweep -------------------------------------------
+    sw_result <- eventReactive(input$sw_run, {
       i <- inp_a(); d <- dat_a()
       if (is.null(i) || isFALSE(i$ok) || is.null(d)) return(NULL)
-      a <- sp_args()
-      r <- do.call(staging_policy_stress, c(list(inputs = i, report = d,
-                                                 out_dir = .out_dir_for(input$run_a)), a))
-      if (is.null(r)) { r <- list(); attr(r, "failed") <- TRUE }
+      th <- suppressWarnings(as.numeric(input$sw_days)); th <- th[!is.na(th)]
+      if (length(th) == 0) return(NULL)
+      sp <- stress_default("sweep")
+      sp$portfolios <- input$sw_portfolios %||% internal_portfolios(i, d)
+      r <- withProgress(message = "Repricing at each threshold…", value = 0.3,
+        staging_threshold_sweep(i, d, .out_dir_for(input$run_a), thresholds = th,
+                                base_spec = sp))
+      if (is.null(r)) { r <- data.frame(); attr(r, "failed") <- TRUE }
       r
     }, ignoreInit = TRUE, ignoreNULL = TRUE)
 
-    output$sp_result <- renderUI({
+    output$sw_result <- renderUI({
       i <- inp_a()
       if (is.null(i) || isFALSE(i$ok))
         return(.an_na("The run's engine inputs could not be read."))
-      r <- sp_result()
-      if (is.null(r))
+      sw <- sw_result()
+      if (is.null(sw))
         return(div(class = "alert alert-secondary", style = "margin-top:10px",
-          icon("circle-info"), " Set the policy above, then Apply."))
-      if (stress_failed(r)) return(.an_na(stress_error_message(r)))
-      if (isTRUE(attr(r, "failed")) || is.null(r$before))
+          icon("circle-info"), " Choose the thresholds and click Reprice. Each is a full repricing, so several take a few seconds."))
+      if (isTRUE(attr(sw, "failed")) || nrow(sw) == 0)
         return(.an_na(stress_diagnosis(inp_a(), dat_a(), .out_dir_for(input$run_a))))
-      pc <- 100 * r$delta / max(r$before, 1)
-      st <- r$stages
-      tabs <- if (!is.null(st)) qdb_reactable(data.frame(
-          Stage = st$stage,
-          `Contracts before` = st$contracts_before, `Contracts after` = st$contracts_after,
-          `ECL before` = .an_money(st$ecl_before), `ECL after` = .an_money(st$ecl_after),
-          check.names = FALSE), searchable = FALSE, page_size = 5) else NULL
-      mig <- if (!is.null(r$migration)) tagList(hr(), h5("Contracts that changed stage"),
-        qdb_reactable(data.frame(Move = r$migration$move,
-          Contracts = r$migration$contracts, Customers = r$migration$customers,
-          Exposure = .an_money(r$migration$exposure),
-          `ECL change` = .an_money(r$migration$ecl_change), check.names = FALSE),
-          searchable = FALSE, page_size = 8)) else NULL
-      bypf <- if (!is.null(r$by_portfolio)) tagList(hr(), h5("Effect by portfolio"),
-        qdb_reactable(data.frame(Portfolio = r$by_portfolio$portfolio,
-          Contracts = r$by_portfolio$contracts, Moved = r$by_portfolio$moved,
-          `ECL before` = .an_money(r$by_portfolio$before),
-          `ECL after` = .an_money(r$by_portfolio$after),
-          Change = .an_money(r$by_portfolio$change), check.names = FALSE),
-          searchable = FALSE, page_size = 8)) else NULL
-      movers <- if (!is.null(r$movers)) {
-        aff <- r$movers[r$movers$change != 0, , drop = FALSE]
-        if (nrow(aff) == 0) NULL else tagList(hr(),
-          h5(sprintf("Customers affected (%s)", .an_money(nrow(aff)))),
-          .drill_customers(aff, page = 12))
-      } else NULL
-      tagList(
-        qdb_stats(list(
-          list(k = "Provision now", v = .an_money(r$before), tone = ""),
-          list(k = "Under this policy", v = .an_money(r$after), tone = "accent"),
-          list(k = "Change", v = .an_money(r$delta),
-               tone = if (r$delta > 0) "err" else if (r$delta < 0) "ok" else ""),
-          list(k = "% change", v = sprintf("%+.2f%%", pc),
-               tone = if (r$delta > 0) "err" else if (r$delta < 0) "ok" else ""),
-          list(k = "Contracts re-staged", v = .an_money(r$moved), tone = "warn"),
-          list(k = "Customers affected", v = .an_money(r$moved_customers), tone = ""))),
-        tabs, mig, bypf, movers)
-    })
-
-    output$sp_sweep <- renderUI({
-      i <- inp_a(); d <- dat_a()
-      if (is.null(i) || isFALSE(i$ok) || is.null(d)) return(NULL)
-      if (is.null(sp_result())) return(NULL)
-      a <- sp_args(); a$dpd_threshold <- NULL
-      sw <- do.call(staging_threshold_sweep,
-                    c(list(inputs = i, report = d, out_dir = .out_dir_for(input$run_a)), a))
-      if (is.null(sw)) return(NULL)
+      ref <- attr(sw, "reference")
+      base <- sw$ecl[sw$threshold == ref]
+      base <- if (length(base) == 1) base else NA_real_
+      wide <- max(sw$ecl) - base
+      vs <- sw[[sprintf("vs_%g", ref)]]
       tbl <- qdb_reactable(data.frame(
-        `DPD threshold` = sw$threshold, `Provision` = .an_money(sw$ecl),
-        `Re-staged` = sw$moved,
-        `vs 60` = if ("vs_60" %in% names(sw)) .an_money(sw$vs_60) else "\u2014",
-        check.names = FALSE), searchable = FALSE, page_size = 8)
-      if (!.an_echarts()) return(tbl)
-      sw$threshold <- as.character(sw$threshold)
-      tagList(
-        echarts4r::e_charts(sw, threshold) |>
+        `DPD threshold` = sw$threshold, Provision = .an_money(sw$ecl),
+        `Re-staged` = .an_money(sw$moved), `Customers re-staged` = .an_money(sw$customers_moved),
+        `vs the run's policy` = if (is.null(vs)) "—" else .an_signed(vs),
+        check.names = FALSE), searchable = FALSE, page_size = 10)
+      chart <- if (.an_echarts()) {
+        x <- sw; x$threshold <- as.character(x$threshold)
+        echarts4r::e_charts(x, threshold) |>
           echarts4r::e_line(ecl, legend = FALSE, symbolSize = 9,
                             lineStyle = list(width = 3),
                             itemStyle = list(color = .AN_COL$plum)) |>
           echarts4r::e_x_axis(name = "DPD threshold", nameLocation = "middle", nameGap = 28) |>
-          echarts4r::e_y_axis(axisLabel = list(formatter = .an_m_axis())) |>
+          echarts4r::e_y_axis(scale = TRUE, axisLabel = list(formatter = .an_m_axis())) |>
           echarts4r::e_tooltip(trigger = "axis") |>
-          echarts4r::e_grid(left = 80, right = 25, top = 15, bottom = 55),
-        tbl)
+          echarts4r::e_grid(left = 80, right = 25, top = 15, bottom = 55)
+      } else NULL
+      tagList(
+        qdb_stats(list(
+          list(k = "Policy in force", v = sprintf("%g days", ref), tone = ""),
+          list(k = "Provision at that policy", v = .an_money(base), tone = "accent"),
+          list(k = "Widest alternative", v = .an_signed(wide),
+               tone = if (isTRUE(wide > 0)) "err" else ""),
+          list(k = "As a share", v = .an_pct(100 * wide / max(base, 1)), tone = ""))),
+        chart, tbl)
     })
 
     # ---- drill-down --------------------------------------------------------
@@ -2254,236 +2229,6 @@ mod_analytics_server <- function(id, runs_root = NULL) {
                            defaultPageSize = page, searchable = nrow(out) > page,
                            columns = cols)
     }
-
-    # ---- what-if (rules) ----------------------------------------------------
-    wi_rules <- reactiveVal(list(whatif_default_rule(1)))
-    wi_next_id <- reactiveVal(2)
-
-    observeEvent(input$wi_add_rule, {
-      rs <- wi_rules(); nid <- wi_next_id()
-      wi_rules(c(rs, list(whatif_default_rule(nid))))
-      wi_next_id(nid + 1)
-    })
-    observeEvent(input$wi_remove_rule_click, {
-      rid <- input$wi_remove_rule_click
-      rs <- wi_rules()
-      if (length(rs) > 1) wi_rules(Filter(function(r) r$id != rid, rs))
-    })
-
-    # Read a rule's current field values back from its own inputs, so the
-    # rules list always reflects what is on screen (and a rebuilt UI - e.g.
-    # after Add/Remove - keeps every other rule's typed values).
-    .wi_read_rule <- function(r) {
-      fid <- function(f) paste0("wi_", f, "_", r$id)
-      g <- function(f, default) { v <- input[[fid(f)]]; if (is.null(v)) default else v }
-      list(id = r$id,
-           label = { lb <- trimws(g("label", r$label)); if (nzchar(lb)) lb else r$label },
-           customer_ids = g("cust", r$customer_ids),
-           portfolios = g("pf", r$portfolios),
-           stages = suppressWarnings(as.numeric(g("stages", r$stages))),
-           stage_to = g("stage_to", r$stage_to),
-           notches = suppressWarnings(as.integer(g("notches", r$notches) %||% 0)),
-           collateral_pct = suppressWarnings(as.numeric(g("coll", r$collateral_pct) %||% 100)),
-           lgd_override = { v <- suppressWarnings(as.numeric(g("lgd", NA))); if (length(v) == 0) NA_real_ else v },
-           exposure_pct = suppressWarnings(as.numeric(g("exp", r$exposure_pct) %||% 100)),
-           pd_scenario = g("scen", r$pd_scenario),
-           maturity_years = { v <- suppressWarnings(as.numeric(g("mat", r$maturity_years)))
-                              if (length(v) != 1 || is.na(v)) 0 else v })
-    }
-
-    output$wi_rules_ui <- renderUI({
-      d <- dat_a(); rules <- wi_rules()
-      pf_choices <- if (!is.null(d)) sort(unique(d$portfolio[nzchar(d$portfolio)])) else character(0)
-      st_choices <- if (!is.null(d)) sort(unique(d$stage[!is.na(d$stage)])) else numeric(0)
-      scen_choices <- c("Weighted (no change)" = "", names(scen_ecl() %||% character(0)))
-      tagList(lapply(rules, function(r) {
-        cur <- isolate(.wi_read_rule(r))     # keep whatever is on screen right now
-        fid <- function(f) ns(paste0("wi_", f, "_", r$id))
-        div(class = "qdb-card", style = "padding:12px;margin-bottom:8px",
-          fluidRow(
-            column(6, textInput(fid("label"), NULL, value = cur$label,
-                                placeholder = "Rule name", width = "100%")),
-            column(6, div(style = "text-align:right",
-              actionButton(ns("wi_remove_rule_click"), "Remove", class = "btn-sm btn-outline-danger",
-                onclick = sprintf("Shiny.setInputValue('%s','%s',{priority:'event'})",
-                                  ns("wi_remove_rule_click"), r$id))))),
-          fluidRow(
-            column(5, textInput(fid("cust"), "Applies to \u2014 customer ids",
-                   value = cur$customer_ids,
-                   placeholder = "comma separated, e.g. 100195, 100024", width = "100%")),
-            column(4, selectInput(fid("pf"), "or portfolios", choices = pf_choices,
-                   selected = cur$portfolios, multiple = TRUE, width = "100%")),
-            column(3, selectInput(fid("stages"), "and stages", choices = st_choices,
-                   selected = cur$stages, multiple = TRUE, width = "100%"))),
-          uiOutput(ns(paste0("wi_info_", r$id))),
-          hr(style = "margin:8px 0"),
-          fluidRow(
-            column(2, selectInput(fid("stage_to"), "Move to stage",
-              choices = c("Unchanged" = "", "1" = "1", "2" = "2", "3" = "3"),
-              selected = cur$stage_to, width = "100%")),
-            column(2, numericInput(fid("notches"), "Rating notches",
-                   value = cur$notches, min = -10, max = 10, step = 1, width = "100%")),
-            column(2, numericInput(fid("coll"), "Collateral %",
-                   value = cur$collateral_pct, min = 0, max = 200, step = 5, width = "100%")),
-            column(2, numericInput(fid("lgd"), "or set LGD",
-                   value = cur$lgd_override, min = 0, max = 1, step = 0.01, width = "100%")),
-            column(2, numericInput(fid("exp"), "Exposure %",
-                   value = cur$exposure_pct, min = 0, max = 300, step = 5, width = "100%")),
-            column(2, selectInput(fid("scen"), "PD scenario",
-                   choices = scen_choices, selected = cur$pd_scenario, width = "100%"))),
-          fluidRow(
-            column(3, numericInput(fid("mat"), "Extend maturity (years)",
-                   value = cur$maturity_years, min = -10, max = 30, step = 0.25,
-                   width = "100%"))))
-      }))
-    })
-
-    # Customer details render as the ids are typed, not on Apply: the point is
-    # to see the customer's current state BEFORE deciding what to change. One
-    # output per rule, each depending only on its own id field.
-    observe({
-      rules <- wi_rules()
-      lapply(rules, function(r) local({
-        rid <- r$id
-        output[[paste0("wi_info_", rid)]] <- renderUI({
-          d <- dat_a()
-          ids <- input[[paste0("wi_cust_", rid)]]
-          if (is.null(d) || is.null(ids) || !nzchar(trimws(ids))) return(NULL)
-          lk <- customer_lookup(d, ids)
-          if (is.null(lk)) return(NULL)
-          tagList(
-            if (!is.null(lk$found)) qdb_reactable(data.frame(
-                Customer = lk$found$customer, Portfolios = lk$found$portfolios,
-                Rating = lk$found$rating, Stage = lk$found$stage,
-                Contracts = lk$found$contracts,
-                Exposure = .an_money(lk$found$exposure),
-                ECL = .an_money(lk$found$ecl),
-                `ECL coverage %` = .an_pct0(lk$found$coverage),
-                LGD = ifelse(is.na(lk$found$lgd), "\u2014",
-                             formatC(lk$found$lgd, format = "f", digits = 3)),
-                check.names = FALSE), searchable = FALSE, page_size = 5) else NULL,
-            if (length(lk$missing) > 0)
-              div(class = "small-muted", style = "color:#dc2626",
-                  sprintf("Not found: %s", paste(lk$missing, collapse = ", ")))
-            else NULL)
-        })
-      }))
-    })
-
-    wi_result <- eventReactive(input$wi_apply, {
-      i <- inp_a(); d <- dat_a(); rules <- wi_rules()
-      if (is.null(i) || isFALSE(i$ok) || is.null(d) || length(rules) == 0) return(NULL)
-      live <- lapply(rules, .wi_read_rule)
-      wi_rules(live)   # persist what was actually applied
-      out_dir <- .out_dir_for(input$run_a)
-      whatif_reprice_rules(i, d, live, out_dir = out_dir)
-    }, ignoreInit = TRUE, ignoreNULL = TRUE)
-
-    output$wi_result <- renderUI({
-      i <- inp_a()
-      if (is.null(i) || isFALSE(i$ok))
-        return(.an_na("The run's engine inputs could not be read, so the book cannot be repriced."))
-      r <- wi_result()
-      if (is.null(r))
-        return(div(class = "alert alert-secondary", style = "margin-top:10px", icon("circle-info"),
-          " Set up rules above, then Apply."))
-      pc <- 100 * r$delta / max(r$baseline, 1)
-      tiles <- qdb_stats(list(
-        list(k = "Provision now", v = .an_money(r$baseline), tone = ""),
-        list(k = "Under this what-if", v = .an_money(r$whatif), tone = "accent"),
-        list(k = "Change", v = .an_money(r$delta),
-             tone = if (r$delta > 0) "err" else if (r$delta < 0) "ok" else ""),
-        list(k = "% change", v = sprintf("%+.2f%%", pc),
-             tone = if (r$delta > 0) "err" else if (r$delta < 0) "ok" else ""),
-        list(k = "Customers changed", v = .an_money(r$customers_affected), tone = "")))
-
-      conflicts <- if (!is.null(r$conflicts) && nrow(r$conflicts) > 0)
-        tagList(div(class = "alert alert-danger", style = "margin-top:10px",
-          icon("triangle-exclamation"),
-          sprintf(" %s contract(s) matched by more than one rule and were skipped.",
-                  nrow(r$conflicts))),
-          qdb_reactable(r$conflicts, searchable = TRUE, page_size = 6)) else NULL
-
-      unpriced <- if (!is.null(r$unpriced) && nrow(r$unpriced) > 0)
-        tagList(div(class = "alert alert-info", style = "margin-top:10px",
-          icon("circle-info"),
-          sprintf(" %s selected contract(s) could not be priced and are excluded.",
-                  format(sum(r$unpriced$contracts), big.mark = ","))),
-          qdb_reactable(data.frame(Portfolio = r$unpriced$portfolio, Reason = r$unpriced$reason,
-                        Contracts = r$unpriced$contracts, Exposure = .an_money(r$unpriced$exposure)),
-                        searchable = FALSE, page_size = 6)) else NULL
-
-      by_cust <- if (!is.null(r$by_customer) && nrow(r$by_customer) > 0) {
-        bc <- utils::head(r$by_customer, 60)
-        # An arrow only where something actually moved; otherwise the single
-        # value, so an unchanged field reads "0.45", not "0.45 -> 0.45".
-        arrow <- function(a, b) {
-          if (length(a) == 0) a <- NA; if (length(b) == 0) b <- NA
-          if (is.na(a) && is.na(b)) return("\u2014")
-          if (is.na(b) || identical(as.character(a), as.character(b))) return(as.character(a))
-          sprintf("%s \u2192 %s", a, b)
-        }
-        arrow_num <- function(a, b, digits = 3, tol = 1e-9) {
-          if (length(a) == 0) a <- NA_real_; if (length(b) == 0) b <- NA_real_
-          if (is.na(a) && is.na(b)) return("\u2014")
-          if (is.na(b) || (!is.na(a) && abs(a - b) < tol))
-            return(formatC(a, format = "f", digits = digits))
-          sprintf("%s \u2192 %s", formatC(a, format = "f", digits = digits),
-                  formatC(b, format = "f", digits = digits))
-        }
-        df <- data.frame(Customer = bc$group, Rule = bc$rule,
-          Facilities = ifelse(bc$changed == bc$contracts,
-                              as.character(bc$contracts),
-                              sprintf("%d of %d", bc$changed, bc$contracts)),
-          Rating = mapply(arrow, bc$rating_before, bc$rating_after),
-          Stage = mapply(arrow, bc$stage_before, bc$stage_after),
-          LGD = if (is.null(bc$lgd_before) || is.null(bc$lgd_after))
-                  rep("\u2014", nrow(bc))
-                else mapply(arrow_num, bc$lgd_before, bc$lgd_after),
-          Exposure = bc$exposure, `ECL before` = bc$before, `ECL after` = bc$after,
-          `ECL change` = bc$change, check.names = FALSE)
-        tagList(hr(), h5("Effect by customer"),
-          NULL,
-          reactable::reactable(df, class = "qdb-rt", compact = TRUE, defaultPageSize = 15,
-            searchable = TRUE, columns = list(
-            Exposure = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-            `ECL before` = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-            `ECL after` = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-            `ECL change` = reactable::colDef(align = "right", cell = function(v) .an_money(v),
-              style = function(v) list(color = if (v >= 0) .AN_COL$err else .AN_COL$ok,
-                                       fontWeight = "600")))))
-      } else NULL
-
-      by_seg <- if (!is.null(r$by_segment) && nrow(r$by_segment) > 0) {
-        bs <- r$by_segment[r$by_segment$change != 0, , drop = FALSE]
-        if (nrow(bs) == 0) NULL else {
-          # Before vs after per portfolio: the table already gives the change,
-          # so the chart shows the two levels side by side instead of repeating it.
-          chart <- if (.an_echarts()) {
-            x <- bs[order(-abs(bs$change)), , drop = FALSE]
-            echarts4r::e_charts(x, group) |>
-              echarts4r::e_bar(before, name = "Before", bar_width = "35%",
-                               itemStyle = list(color = .AN_COL$grey)) |>
-              echarts4r::e_bar(after, name = "After", bar_width = "35%",
-                               itemStyle = list(color = .AN_COL$plum)) |>
-              echarts4r::e_y_axis(axisLabel = list(formatter = .an_m_axis())) |>
-              echarts4r::e_x_axis(axisLabel = list(rotate = 20, fontSize = 10)) |>
-              echarts4r::e_tooltip(trigger = "axis") |> echarts4r::e_legend(bottom = 0) |>
-              echarts4r::e_grid(left = 80, right = 25, top = 15, bottom = 60)
-          } else NULL
-          tagList(hr(), h5("Effect by portfolio"),
-            NULL,
-            chart,
-            qdb_reactable(data.frame(Portfolio = bs$group, Contracts = bs$contracts,
-              Before = .an_money(bs$before), After = .an_money(bs$after),
-              Change = .an_money(bs$change), check.names = FALSE), searchable = FALSE))
-        }
-      } else NULL
-
-      tagList(tiles,
-        NULL,
-        conflicts, unpriced, by_cust, by_seg)
-    })
 
     # ---- migration ----------------------------------------------------------
     output$t_stagemove <- reactable::renderReactable({

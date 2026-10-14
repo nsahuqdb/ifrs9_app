@@ -7,7 +7,7 @@ Description:
     analytics are provided by the ifrs9qdb package; this project carries only
     the Shiny modules, the per-quarter configuration and the run archive.
 Depends:
-    ifrs9qdb (>= 1.1.0)
+    ifrs9qdb (>= 1.2.0)
 Imports:
     shiny, bslib, reactable, echarts4r, DT, shinyAce, htmltools, htmlwidgets,
     jsonlite, yaml, readr, tibble, markdown, commonmark, base64enc, later,

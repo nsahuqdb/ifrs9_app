@@ -3,6 +3,61 @@
 Notes on deferred methodology questions, known divergences from V4,
 and design decisions worth revisiting.
 
+## Stress testing simplified: one stress function  (2026-10)
+
+"What-if & scenarios" is now **Stress testing**, four tabs instead of eleven,
+on the engine's one stress function (ifrs9qdb 1.2.0, stress_apply()):
+
+  Stress test        one editor for every stress. A stress names who it
+                     reaches -- portfolios AND stages AND customer ids, an
+                     empty one not narrowing it -- and what changes: the
+                     Stage 2 DPD threshold and the four triggers, move to
+                     stage, largest N default, PD multiplier, PD scenario,
+                     rating notches, LGD base and floor, collateral, exposure,
+                     maturity. The customers named are looked up as their ids
+                     are typed (customer_lookup(spaces = FALSE), the way the
+                     stress reads them). Add a package, Add the standard
+                     packages, Load saved, Save, Run: one in full, several
+                     side by side.
+  Sensitivity        Each lever (was Lever sensitivity), To a target (was
+                     Reverse stress), Staging threshold (the sweep from the
+                     Staging policy tab, the run's own threshold always
+                     priced).
+  Macro & scenarios  the MEV forecast, with the weights followed, held or set
+                     by hand, and Ten points onto each scenario (was What-if
+                     reweighting and Sensitivity).
+  Roll forward       unchanged.
+
+What went: the What-if rules (a stress on named customers), Staging policy (a
+stress with the staging levers), Stress packages (the same editor), What-if
+reweighting (Set my own on Macro & scenarios) and Sensitivity (Ten points).
+Scenario comparison is Single run -> Scenarios: it is the run as booked, not a
+stress, and it no longer gates the stress tabs -- a run without per-scenario
+reports could not open any of them.
+
+Fixed on the way:
+
+* Every lever reaches the scope and nothing else. The PD multiplier and the
+  LGD base and floor sit on the pricing context, so a Business Finance stress
+  moved every other portfolio too (PD x1.25 on the internally rated book was
+  0.37m / 0.43m too high on the reference runs, LGD 0.55 / 0.70 on Business
+  Finance 22.4m / 13.0m).
+* A what-if split customer ids on spaces, so a customer named with spaces
+  never matched: ids are split on commas and semicolons only.
+* Packages had no maturity lever, named customers, stages, forced stage or
+  scenario PD curves; a what-if had no staging policy. Each has all of them.
+* A package removed by name took every package of that name with it, and the
+  inputs of the packages after it shifted onto their neighbours (they were
+  keyed by position): each package now has its own id.
+* A cleared portfolio or stage selection came back on the next redraw (a
+  multi-select sends NULL when emptied): empty now means the whole book.
+* The custom weights on the macro path were priced as typed, rounded to two
+  places, so the run's own weights did not reprice to the booked figure:
+  untouched, they are the run's own exactly.
+
+Saved stresses are config/stress_packages.yml, which the Python app reads and
+writes too. R and Python agree to within 0.000005 on every stress compared.
+
 ## One set of ECL functions; Compare two runs simplified  (2026-10)
 
 The engine (ifrs9qdb 1.1.0) now prices everything -- the report, the ECL
