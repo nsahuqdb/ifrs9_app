@@ -135,18 +135,19 @@ setwd(.project_root)
 local({
   if (!requireNamespace("ifrs9qdb", quietly = TRUE)) {
     stop("The ifrs9qdb package is not installed.\n",
-         "  install.packages(\"ifrs9qdb_1.2.0.tar.gz\", repos = NULL, type = \"source\")",
+         "  install.packages(\"ifrs9qdb_1.3.0.tar.gz\", repos = NULL, type = \"source\")",
          call. = FALSE)
   }
   library(ifrs9qdb)
   # Engines before 1.0.3 read config/model.yml's PD models but not its ecl
   # block (EAD payment rules, Stage 3 method, exposure cap, LGD), so they price
   # on built-in settings and their figures do not match this config's; before
-  # 1.2.0 they have no single stress function for the Stress testing tabs.
-  if (utils::packageVersion("ifrs9qdb") < "1.2.0") {
+  # 1.2.0 they have no single stress function for the Stress testing tabs, and
+  # before 1.3.0 no customer ECL calculator.
+  if (utils::packageVersion("ifrs9qdb") < "1.3.0") {
     warning(sprintf(paste0(
-      "ifrs9qdb %s is older than 1.2.0, which this app needs: the Stress ",
-      "testing tabs call its one stress function, and before 1.0.3 it ignores ",
+      "ifrs9qdb %s is older than 1.3.0, which this app needs: the customer ECL ",
+      "calculator and the Stress testing tabs call its functions, and before 1.0.3 it ignores ",
       "the ECL settings in config/model.yml, so its figures will not match. ",
       "Run renv::install(\"../ifrs9qdb\") and restart the app."),
       as.character(utils::packageVersion("ifrs9qdb"))),

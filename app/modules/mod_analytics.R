@@ -668,7 +668,21 @@ mod_analytics_server <- function(id, runs_root = NULL) {
               "Drilling in" = "Open any finding to see the contracts it covers, largest exposure first."),
               note = "These are reported, never corrected. Severity is a guide to what distorts a provision most."),
 
-            reactable::reactableOutput(ns("t_dq"))))
+            reactable::reactableOutput(ns("t_dq"))),
+          nav_panel("Customer ECL calculator",
+            p(class = "small-muted", style = "margin-top:8px",
+              "Pick a customer and download an Excel workbook that rebuilds its provision from the run's inputs with formulas, so the figures can be checked against the report."),
+            qdb_help(list(
+              "What is in it" = "Summary, Settings, Lines (the customer's positions as the run read them), Overrides, Staging, LGD, PD inputs, PD annual, PD monthly, EAD and ECL month by month.",
+              "Inputs and formulas" = "Blue cells are the run's inputs; black cells are formulas. Change an input and the provision follows; the report column stays as booked.",
+              "The check" = "The Summary marks each position OK when the workbook's ECL equals the report's to the cent, the overlay included.",
+              "PD curve" = "Rebuilt from the TTC PDs, the macro forecasts and the scenario weights. When it reproduces the run's StPD.csv (every run this code produced) the ECL uses it; otherwise the run's StPD, switchable on the Settings tab."),
+              note = "Each export is written to the audit log, since the workbook carries the customer's positions."),
+            uiOutput(ns("calc_pick")),
+            uiOutput(ns("calc_cust")),
+            div(style = "margin-top:10px",
+              downloadButton(ns("calc_dl"), "Download the calculator (.xlsx)",
+                             class = "btn-sm btn-primary"))))
       }
     })
 
@@ -2599,6 +2613,59 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         `ECL coverage %` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v)),
         `Share %` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v))))
     })
+
+    # ------------------------------------------- customer ECL calculator ---
+    calc_customers <- reactive({
+      d <- .run_dir_for(input$run_a); if (is.null(d)) return(NULL)
+      tryCatch(run_customers(d), error = function(e) NULL)
+    })
+    output$calc_pick <- renderUI({
+      cu <- calc_customers()
+      if (is.null(cu) || nrow(cu) == 0)
+        return(qdb_empty("This run has no positions to export.", "file-excel"))
+      lab <- sprintf("%s%s (%s, %d position%s)", cu$customer_id,
+                     ifelse(nzchar(cu$customer_name), paste0(" \u2014 ", cu$customer_name), ""),
+                     cu$book, cu$positions, ifelse(cu$positions == 1, "", "s"))
+      selectizeInput(ns("calc_customer"), "Customer",
+                     choices = stats::setNames(cu$customer_id, lab), width = "100%",
+                     options = list(placeholder = "Type an id or a name"))
+    })
+    output$calc_cust <- renderUI({
+      d <- dat_a(); id <- input$calc_customer
+      if (is.null(d) || is.null(id) || !nzchar(id)) return(NULL)
+      lk <- tryCatch(customer_lookup(d, id, spaces = FALSE), error = function(e) NULL)
+      f <- lk$found
+      if (is.null(f) || nrow(f) == 0) return(NULL)
+      p(class = "small-muted", sprintf(
+        "%s: %d position%s, exposure %s, ECL in the report %s (worst stage %s). The workbook's Summary tab rebuilds the provision position by position.",
+        id, as.integer(f$contracts[1]), if (f$contracts[1] == 1) "" else "s",
+        .an_money(f$exposure[1]), .an_money(f$ecl[1]), f$stage[1]))
+    })
+    output$calc_dl <- downloadHandler(
+      filename = function() {
+        id <- gsub("[^A-Za-z0-9_-]", "_", input$calc_customer %||% "customer")
+        sprintf("ECL_calculator_%s_%s.xlsx", input$run_a %||% "run", id)
+      },
+      content = function(file) {
+        d <- .run_dir_for(input$run_a); id <- input$calc_customer
+        if (is.null(d) || is.null(id) || !nzchar(id)) {
+          showNotification("Pick a run and a customer first.", type = "warning")
+          return(invisible(NULL))
+        }
+        withProgress(message = "Building the workbook\u2026", value = 0.4, {
+          ok <- tryCatch({ customer_ecl_workbook(d, id, file); TRUE },
+                         error = function(e) {
+                           showNotification(paste("The calculator could not be built:",
+                                                  conditionMessage(e)),
+                                            type = "error", duration = 10)
+                           FALSE })
+        })
+        if (isTRUE(ok))
+          tryCatch(audit_event(list(event = "customer_calculator_exported",
+                                    run_id = input$run_a, customer_id = id,
+                                    user = Sys.info()[["user"]])),
+                   error = function(e) NULL)
+      })
 
     output$t_dq <- reactable::renderReactable({
       q <- data_quality(dat_a())
