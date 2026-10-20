@@ -673,10 +673,10 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             p(class = "small-muted", style = "margin-top:8px",
               "Pick a customer and download an Excel workbook that rebuilds its provision from the run's inputs with formulas, so the figures can be checked against the report."),
             qdb_help(list(
-              "What is in it" = "Summary, Settings, Lines (the customer's positions as the run read them), Overrides, Staging, LGD, PD inputs, PD annual, PD monthly, EAD and ECL month by month.",
+              "What is in it" = "Summary, Settings, Lines (the customer's positions as the run read them), Overrides, Staging, LGD, PD (the run's monthly PD curves), EAD and ECL month by month.",
               "Inputs and formulas" = "Blue cells are the run's inputs; black cells are formulas. Change an input and the provision follows; the report column stays as booked.",
               "The check" = "The Summary marks each position OK when the workbook's ECL equals the report's to the cent, the overlay included.",
-              "PD curve" = "Rebuilt from the TTC PDs, the macro forecasts and the scenario weights. When it reproduces the run's StPD.csv (every run this code produced) the ECL uses it; otherwise the run's StPD, switchable on the Settings tab."),
+              "PD curve" = "The run's monthly cumulative PD curve (StPD.csv) for the position's portfolio and rating bucket, as an input: the macro model and the scenario weights behind it are the same for every customer."),
               note = "Each export is written to the audit log, since the workbook carries the customer's positions."),
             uiOutput(ns("calc_pick")),
             uiOutput(ns("calc_cust")),
