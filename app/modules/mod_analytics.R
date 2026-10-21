@@ -158,7 +158,7 @@
   rating = "The new rating, on the prior run's PD curves.",
   macro = "The macro inputs: MEV forecasts, scenario weights and severities, and the GDP history, on the prior model.",
   model = "The macro PD model itself: its variables, coefficients, TTC anchor and PDs, and how the variables combine. Zero when the model did not change.",
-  methodology = "How the ECL is calculated rather than with what: the ECL settings in model.yml (the repayment shape for contracts with no repayment schedule, the Stage 3 method, the exposure cap) and, when the prior run was priced by an earlier version of the engine, the change in the calculation itself. What changed is named under the chart. Shown only when it is not zero.",
+  methodology = "How the ECL is calculated rather than with what: the ECL settings in model.yml (the repayment shape for contracts with no repayment schedule, the Stage 3 method, the exposure cap) and, when the prior run was priced by an earlier version of the engine, the change in the calculation itself. Shown only when it is not zero.",
   pd_curves = "Macro inputs and model together: one of the runs has no saved config, so the two cannot be told apart.",
   lgd = "Collateral, and so LGD, and the EIR.",
   overlay = "The post-model management overlay.",
@@ -840,22 +840,6 @@ mod_analytics_server <- function(id, runs_root = NULL) {
           list(k = "% change", v = if (v$opening != 0) .an_pct(100 * mv / v$opening) else "\u2014",
                tone = tone))),
         uiOutput(ns("bl_chart")),
-        p(class = "small-muted", sprintf(
-          "Each contract is repriced from the prior run to this one a cause at a time, in the order shown, so the bars sum exactly to the current ECL (residual %.2f).%s",
-          v$residual, if (isTRUE(ch$model_changed)) "" else " The PD model did not change, so Model change is zero.")),
-        # what the methodology step is made of, named beside the chart
-        {
-          set_amt <- sum(v$steps$amount[v$steps$key == "settings"])
-          if (length(ch$settings) && isTRUE(abs(set_amt) >= 0.5))
-            div(class = "alert alert-info", style = "padding:0.5em 0.8em; margin:0.4em 0",
-              tags$b("Methodology change "),
-              sprintf("The two runs' saved configs differ in the ECL settings, which moves the provision by %s:",
-                      .an_signed(set_amt)),
-              tags$ul(style = "margin:4px 0", lapply(ch$settings, function(it)
-                tags$li(sprintf("%s: %s \u2192 %s", it$item, it$before, it$after)))),
-              span(class = "small-muted", "Set in model.yml (ecl block) of each run's config snapshot."))
-        },
-        lapply(br$notes, function(n) div(class = "alert alert-info", style = "padding:0.5em 0.8em; margin:0.4em 0", n)),
         reactable::reactableOutput(ns("bl_steps")),
         tags$details(class = "qdb-help",
           tags$summary(icon("sliders"), "What changed in the model, the macro inputs and the ECL settings"),
