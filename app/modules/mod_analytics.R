@@ -139,7 +139,7 @@
 .BL_GROUPS <- list(
   derecognised = "derecognised", new_business = "new_business",
   exposure = "exposure", stage = "stage", rating = "rating",
-  macro = "macro", model = "model", methodology = c("settings", "method"),
+  macro = "macro", model = "model", settings = "settings", method = "method",
   pd_curves = "pd_curves",
   lgd = "lgd", overlay = "overlay", other = "other")
 .BL_ALWAYS <- c("derecognised", "new_business", "exposure", "stage", "rating",
@@ -147,7 +147,8 @@
 .BL_LABEL <- c(derecognised = "Derecognised", new_business = "New business",
                exposure = "Exposure change", stage = "Stage migration",
                rating = "Rating migration", macro = "Macro variable change",
-               model = "Model change", methodology = "Methodology change",
+               model = "Model change", settings = "ECL settings change",
+               method = "Engine change",
                pd_curves = "Macro and model change",
                lgd = "LGD & collateral", overlay = "Overlay", other = "Unexplained")
 .BL_WHAT <- c(
@@ -158,7 +159,8 @@
   rating = "The new rating, on the prior run's PD curves.",
   macro = "The macro inputs: MEV forecasts, scenario weights and severities, and the GDP history, on the prior model.",
   model = "The macro PD model itself: its variables, coefficients, TTC anchor and PDs, and how the variables combine. Zero when the model did not change.",
-  methodology = "How the ECL is calculated rather than with what: the ECL settings in model.yml (EAD fallback rules, Stage 3 method, exposure cap) and, when the prior run was priced by an earlier version of the engine, the change in the calculation itself. Shown only when it is not zero.",
+  settings = "A setting in model.yml's ecl block differs between the two runs' saved configs -- the repayment shape for contracts with no repayment schedule, the Stage 3 method or the exposure cap. Which one is listed under the chart. Shown only when not zero.",
+  method = "The prior run was priced by another version of the calculation; it is repriced on this one first. Zero when both runs used the same engine. Shown only when not zero.",
   pd_curves = "Macro inputs and model together: one of the runs has no saved config, so the two cannot be told apart.",
   lgd = "Collateral, and so LGD, and the EIR.",
   overlay = "The post-model management overlay.",
@@ -347,7 +349,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             qdb_help(c(
               stats::setNames(as.list(unname(.BL_WHAT)), unname(.BL_LABEL[names(.BL_WHAT)])),
               list("Choosing a level" = "A contract counts in one group: the customer, facility, account type, segment, stage or rating it is in now, or, if it was derecognised, the one it left. So a stage's Prior ECL is what its current contracts had in the prior run, not the prior run's total for that stage: a contract that moved from Stage 1 to Stage 2 is in Stage 2, with its move under Stage migration. The groups add up to the whole book.")),
-              note = "Each contract is repriced from the prior run to the current one a cause at a time, in the order shown, on each run's frozen config, so the steps sum exactly to the closing ECL. Macro variable change and Model change are told apart by pricing once more on PD curves built from the current run's macro inputs and the prior run's model. Model change is the PD model alone. The ECL settings in model.yml, and the difference when a prior run was priced by an earlier version of the engine (it is first repriced on this one), are Methodology change, shown only when not zero. Unexplained appears only if the repricing leaves something over."),
+              note = "Each contract is repriced from the prior run to the current one a cause at a time, in the order shown, on each run's frozen config, so the steps sum exactly to the closing ECL. Macro variable change and Model change are told apart by pricing once more on PD curves built from the current run's macro inputs and the prior run's model. Model change is the PD model alone. A change in model.yml's ECL settings between the two runs' configs is ECL settings change, and the difference when a prior run was priced by an earlier version of the engine (it is first repriced on this one) is Engine change; each is shown only when not zero. Unexplained appears only if the repricing leaves something over."),
             radioButtons(ns("bl_level"), "Compare", choices = .BL_LEVELS, inline = TRUE,
                          selected = isolate(input$bl_level) %||% "book"),
             uiOutput(ns("bl_pick")),
@@ -362,14 +364,22 @@ mod_analytics_server <- function(id, runs_root = NULL) {
               "Rating migration" = "Customers moving between rating grades, ordered along the scale's own hierarchy (best first).",
               "Upgrade / Downgrade" = "Decided by hierarchy rank, not alphabetically \u2014 a downgrade is a move to a worse grade.",
               "Rating scale" = "Internal (QDB grades) for Business Finance, Off BS, Al Dhameen and Tasdeer; external (agency grades) for Investments and Banks. Both reuse hierarchy 1&ndash;21, so they are never mixed."),
-              note = "Each cell shows the number of customers making that move."),
-            fluidRow(column(4, uiOutput(ns("pick_rt2")))),
-            fluidRow(
-              column(7, h5("Stage migration (customers)"), uiOutput(ns("c_ctrans"))),
-              column(5, h5("Rating direction"), uiOutput(ns("c_migsum")))),
-            h5(style = "margin-top:14px", "Customers whose stage changed"),
+              note = "Each cell shows the number of customers making that move. Upgraded, Stable and Downgraded are counted along each scale's own order."),
+            h5("Stage migration (customers)"),
+            p(class = "small-muted", "Customers in both runs: the stage in the prior run against the stage now. The diagonal did not move."),
+            uiOutput(ns("c_ctrans")),
+            h5(style = "margin-top:14px", "What the customers who moved carry"),
+            p(class = "small-muted", "For each move (for example Stage 1 \u2192 Stage 2), the customers who made it: their provision in the prior run and in this one. The difference is everything that changed for them -- the stage, but also repayments, rating and PD curves. The stage move alone is priced on Movement, as Stage migration."),
             reactable::reactableOutput(ns("t_stagemove")),
-            hr(), h5("Rating migration matrix"), uiOutput(ns("c_ratmig"))))
+            hr(), h5("Rating migration"),
+            p(class = "small-muted", "The internal (QDB) and external (agency) scales side by side: they cannot share an axis, and an upgrade is only meaningful along a scale's own order. Exposure and ECL are this run's."),
+            fluidRow(
+              column(6, h5("Internal rating"), uiOutput(ns("c_migsum_1")),
+                     h5(style = "margin-top:10px", "From / to (customers)"), uiOutput(ns("c_ratmig_1")),
+                     h5(style = "margin-top:10px", "The moves"), reactable::reactableOutput(ns("t_ratmoves_1"))),
+              column(6, h5("External rating"), uiOutput(ns("c_migsum_2")),
+                     h5(style = "margin-top:10px", "From / to (customers)"), uiOutput(ns("c_ratmig_2")),
+                     h5(style = "margin-top:10px", "The moves"), reactable::reactableOutput(ns("t_ratmoves_2"))))))
       } else if (identical(input$mode, "stress")) {
         # One stress function behind every tab (stress_apply()): a stress test
         # names who it reaches and what changes, so a what-if on named
@@ -543,10 +553,10 @@ mod_analytics_server <- function(id, runs_root = NULL) {
               "Restructured" = "Local Flag 1, QDB's restructuring flag. Includes restructuring overrides.",
               "Stage override" = "A reviewed override (the run's stage overrides) that put the customer in Stage 2 or 3.",
               "Tasdeer" = "Collectively assessed as Stage 2 regardless of any other trigger.",
-              "Another facility of the customer" = "Contagion: nothing on the contract itself, but the customer has a facility in Stage 2 or 3. Tasdeer is excluded.",
+              "Per customer" = "Every reason but Tasdeer is the customer's: DPD is the customer's worst facility, and each of its facilities carries it, so there is no separate contagion reason.",
               "Local Flag 3 and the default flag" = "Not reasons of their own. The ETL sets Local Flag 3 on every customer its rule puts in Stage 2 and on Stage 2 overrides, and the default flag when the worst DPD is over 90 or on a Stage 3 override, so they restate the stage.",
               "Staging consistency" = "Re-applies the staging rule and reports only genuine disagreements. A manual stage in the source (AccountMaster.Stage) cannot be replayed from the report, so it appears as a difference."),
-              note = "Staging is decided per customer, but Tasdeer and contagion act per contract, so the Stage 2 reasons are contract-level."),
+              note = "Staging is decided per customer, on its worst facility; Tasdeer is assessed collectively per contract."),
 
             reactable::reactableOutput(ns("t_stagedist")),
             uiOutput(ns("thr_note")),
@@ -819,7 +829,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         val <- function(x) if (is.null(x) || length(x) == 0 || is.na(x[1])) "\u2014" else as.character(x[1])
         tags$table(class = "table table-sm", style = "margin:4px 0 10px",
           tags$tr(tags$th("What"), tags$th("Prior"), tags$th("Current")),
-          lapply(items, function(it) tags$tr(tags$td(tags$code(it$item)),
+          lapply(items, function(it) tags$tr(tags$td(it$item),
                                              tags$td(val(it$before)), tags$td(val(it$after)))))
       }
       tagList(
@@ -835,7 +845,20 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         p(class = "small-muted", sprintf(
           "Each contract is repriced from the prior run to this one a cause at a time, in the order shown, so the bars sum exactly to the current ECL (residual %.2f).%s",
           v$residual, if (isTRUE(ch$model_changed)) "" else " The PD model did not change, so Model change is zero.")),
-        lapply(br$notes, function(n) div(class = "alert alert-info", style = "padding:0.5em 0.8em; margin:0.4em 0", n)),
+        # what the ECL settings step is made of, named beside the chart
+        {
+          set_amt <- sum(v$steps$amount[v$steps$key == "settings"])
+          if (length(ch$settings) && isTRUE(abs(set_amt) >= 0.5))
+            div(class = "alert alert-info", style = "padding:0.5em 0.8em; margin:0.4em 0",
+              tags$b("ECL settings change "),
+              sprintf("The two runs' saved configs differ in the ECL settings, and that moves the provision by %s:",
+                      .an_signed(set_amt)),
+              tags$ul(style = "margin:4px 0", lapply(ch$settings, function(it)
+                tags$li(sprintf("%s: %s \u2192 %s", it$item, it$before, it$after)))),
+              span(class = "small-muted", "Set in model.yml (ecl block) of each run's config snapshot."))
+        },
+        lapply(Filter(function(n) !startsWith(n, "Repricing the previous run on this engine"), br$notes),
+               function(n) div(class = "alert alert-info", style = "padding:0.5em 0.8em; margin:0.4em 0", n)),
         reactable::reactableOutput(ns("bl_steps")),
         tags$details(class = "qdb-help",
           tags$summary(icon("sliders"), "What changed in the model, the macro inputs and the ECL settings"),
@@ -932,13 +955,8 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     })
 
     output$c_ctrans <- renderUI({
-      # Filter to the same portfolios as the rating charts, so switching the
-      # scale changes every chart on the tab rather than only the rating ones.
-      ia <- inp_b() %||% inp_a()
-      rt <- input$rating_type2 %||% "1"
-      da <- an_filter_rating_type(dat_a(), ia, rt)
-      db <- an_filter_rating_type(dat_b(), ia, rt)
-      tr <- customer_stage_migration(da, db)
+      # the whole book: staging does not depend on the rating scale
+      tr <- customer_stage_migration(dat_a(), dat_b())
       if (is.null(tr)) return(.an_na("No overlapping customers."))
       tr$from_l <- paste("Stage", tr$from); tr$to_l <- paste("Stage", tr$to)
       if (!.an_echarts())
@@ -960,46 +978,71 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     })
 
 
-    output$c_migsum <- renderUI({
-      ia <- inp_b() %||% inp_a(); rt <- input$rating_type2 %||% "1"
-      ms <- migration_summary(an_filter_rating_type(dat_a(), ia, rt),
-                              an_filter_rating_type(dat_b(), ia, rt),
-                              levels = .rt2_levels())
-      if (is.null(ms)) return(.an_na("Ratings not comparable between these runs."))
-      if (!.an_echarts())
-        return(qdb_reactable(data.frame(Direction = ms$direction, Contracts = ms$n,
-                 Exposure = .an_money(ms$exposure)), searchable = FALSE))
-      ms$col <- ifelse(ms$direction == "downgrade", .AN_COL$err,
-                ifelse(ms$direction == "upgrade", .AN_COL$ok, .AN_COL$grey))
-      cj <- htmlwidgets::JS(sprintf("function(p){var c=[%s]; return c[p.dataIndex];}",
-                                    paste0("'", ms$col, "'", collapse = ",")))
-      echarts4r::e_charts(ms, direction) |>
-        echarts4r::e_bar(n, legend = FALSE, bar_width = "50%",
-                         itemStyle = list(color = cj)) |>
-        echarts4r::e_tooltip() |>
-        echarts4r::e_grid(left = 60, right = 20, top = 15, bottom = 35)
-    })
-
-    output$c_ratmig <- renderUI({
-      ia <- inp_b() %||% inp_a(); rt <- input$rating_type2 %||% "1"
-      mg <- rating_migration(an_filter_rating_type(dat_a(), ia, rt),
-                             an_filter_rating_type(dat_b(), ia, rt),
-                             levels = .rt2_levels())
-      if (is.null(mg)) return(.an_na("Ratings not comparable between these runs."))
-      lv <- attr(mg, "levels")
-      if (!.an_echarts())
-        return(qdb_reactable(data.frame(From = mg$from, To = mg$to, Contracts = mg$n),
-                             page_size = 12))
-      echarts4r::e_charts(mg, from) |>
-        echarts4r::e_heatmap(to, n, itemStyle = list(borderWidth = 1.5, borderColor = "#fff")) |>
-        echarts4r::e_visual_map(n, inRange = list(color = c("#f7f4f9", "#c9a9d8", .AN_COL$plum)),
-                                orient = "horizontal", left = "center", bottom = 0) |>
-        echarts4r::e_tooltip(formatter = htmlwidgets::JS(
-          "function(p){return p.value[0]+' \u2192 '+p.value[1]+'<br/><b>'+p.value[2]+'</b> contracts';}")) |>
-        echarts4r::e_x_axis(name = "From", type = "category", data = lv,
-                            axisLabel = list(rotate = 35, fontSize = 10)) |>
-        echarts4r::e_y_axis(name = "To", type = "category", data = lv) |>
-        echarts4r::e_grid(left = 95, right = 30, bottom = 95, top = 15)
+    # ---- rating migration, one scale per column ------------------------
+    .mig_scale <- function(rt) {
+      ia <- inp_b() %||% inp_a()
+      da <- an_filter_rating_type(dat_a(), ia, rt)
+      db <- an_filter_rating_type(dat_b(), ia, rt)
+      list(a = da, b = db, levels = an_rating_levels(ia, rt))
+    }
+    .dir_word <- c(upgrade = "Upgraded", stable = "Stable", downgrade = "Downgraded")
+    for (rt in c("1", "2")) local({
+      rt <- rt
+      output[[paste0("c_migsum_", rt)]] <- renderUI({
+        m <- .mig_scale(rt)
+        ms <- migration_summary(m$a, m$b, levels = m$levels)
+        if (is.null(ms)) return(.an_na("No customer on this scale is rated in both runs."))
+        tot <- sum(ms$n); n_of <- function(k) sum(ms$n[ms$direction == k])
+        tagList(
+          qdb_stats(list(
+            list(k = "Upgraded", v = .an_money(n_of("upgrade")), tone = "ok"),
+            list(k = "Stable", v = .an_money(n_of("stable"))),
+            list(k = "Downgraded", v = .an_money(n_of("downgrade")), tone = "err"),
+            list(k = "Downgrade rate", v = .an_pct0(100 * n_of("downgrade") / max(tot, 1))))),
+          .rt(data.frame(Direction = unname(.dir_word[ms$direction]), Customers = ms$n,
+                         `Exposure now` = ms$exposure, `ECL now` = ms$ecl, check.names = FALSE),
+              sortable = FALSE, pagination = FALSE, columns = list(
+                `Exposure now` = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
+                `ECL now` = reactable::colDef(align = "right", cell = function(v) .an_money(v)))))
+      })
+      output[[paste0("c_ratmig_", rt)]] <- renderUI({
+        m <- .mig_scale(rt)
+        mg <- rating_migration(m$a, m$b, levels = m$levels)
+        if (is.null(mg)) return(.an_na("Ratings not comparable between these runs."))
+        lv <- attr(mg, "levels")
+        # a from/to grid, prior rating down the side, best grade first
+        grid <- matrix(0L, length(lv), length(lv), dimnames = list(lv, lv))
+        for (i in seq_len(nrow(mg))) grid[mg$from[i], mg$to[i]] <- as.integer(mg$n[i])
+        cell <- function(i, j) {
+          v <- grid[i, j]
+          st <- if (i == j) "background:#f3eef7;" else if (v > 0 && j > i) "color:#b42318;font-weight:600;" else
+                if (v > 0) "color:#067647;font-weight:600;" else "color:#b7b0c0;"
+          tags$td(style = paste0("text-align:right;padding:2px 6px;", st), v)
+        }
+        div(style = "overflow-x:auto",
+          tags$table(class = "table table-sm", style = "font-size:11px;margin:0",
+            tags$tr(tags$th(style = "white-space:nowrap", "Prior \u2193 / now \u2192"),
+                    lapply(lv, function(x) tags$th(style = "text-align:right;white-space:nowrap", x))),
+            lapply(seq_along(lv), function(i) tags$tr(
+              tags$th(style = "white-space:nowrap", lv[i]),
+              lapply(seq_along(lv), function(j) cell(i, j))))))
+      })
+      output[[paste0("t_ratmoves_", rt)]] <- reactable::renderReactable({
+        m <- .mig_scale(rt)
+        mg <- rating_migration(m$a, m$b, levels = m$levels)
+        if (is.null(mg)) return(NULL)
+        mv <- mg[mg$direction != "stable", , drop = FALSE]
+        if (nrow(mv) == 0) return(reactable::reactable(
+          data.frame(Result = "No customer changed rating on this scale."),
+          sortable = FALSE, class = "qdb-rt"))
+        mv <- mv[order(-mv$exposure), , drop = FALSE]
+        .rt(data.frame(From = mv$from, To = mv$to, Direction = unname(.dir_word[mv$direction]),
+                       Customers = mv$n, `Exposure now` = mv$exposure, `ECL now` = mv$ecl,
+                       check.names = FALSE),
+            defaultPageSize = 10, columns = list(
+              `Exposure now` = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
+              `ECL now` = reactable::colDef(align = "right", cell = function(v) .an_money(v))))
+      })
     })
 
     output$c_stage <- renderUI({
@@ -1434,15 +1477,6 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         `Change %` = reactable::colDef(align = "right", cell = function(v) .an_pct(v))))
     })
 
-    output$pick_rt2 <- renderUI({
-      i <- inp_b() %||% inp_a(); ch <- an_rating_types(i)
-      if (is.null(ch) || length(ch) == 0) return(NULL)
-      selectInput(ns("rating_type2"), "Rating scale", choices = ch, width = "100%")
-    })
-    .rt2_levels <- reactive({
-      i <- inp_b() %||% inp_a()
-      an_rating_levels(i, input$rating_type2 %||% "1")
-    })
 
     # ---- MEV forecast ------------------------------------------------------
     mev_base <- reactive({ mev_forecast_table(.out_dir_for(input$run_a)) })
@@ -2257,10 +2291,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     # ---- migration ----------------------------------------------------------
     output$t_stagemove <- reactable::renderReactable({
       a <- dat_a(); b <- dat_b(); if (is.null(a) || is.null(b)) return(NULL)
-      # on the rating scale chosen, as the heatmap beside it
-      ia <- inp_b() %||% inp_a(); rt <- input$rating_type2 %||% "1"
-      cm <- customer_stage_migration(an_filter_rating_type(a, ia, rt),
-                                     an_filter_rating_type(b, ia, rt))
+      cm <- customer_stage_migration(a, b)
       if (is.null(cm)) return(NULL)
       cm <- cm[cm$from != cm$to, , drop = FALSE]
       if (nrow(cm) == 0) return(reactable::reactable(
@@ -2269,10 +2300,15 @@ mod_analytics_server <- function(id, runs_root = NULL) {
       lbl <- sprintf("Stage %s \u2192 Stage %s", cm$from, cm$to)
       dir <- ifelse(cm$to > cm$from, "Deterioration", "Improvement")
       df <- data.frame(Movement = lbl, Direction = dir, Customers = cm$customers,
-                       `Exposure now` = cm$exposure, `ECL now` = cm$ecl,
+                       `Exposure, prior` = cm$exposure_prev, `Exposure now` = cm$exposure,
+                       `ECL, prior` = cm$ecl_prev, `ECL now` = cm$ecl,
+                       `Change in ECL` = cm$ecl - cm$ecl_prev,
                        check.names = FALSE)
       df <- df[order(-df$Customers), , drop = FALSE]
       .rt(df, defaultPageSize = 10, columns = list(
+        `Exposure, prior` = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
+        `ECL, prior` = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
+        `Change in ECL` = reactable::colDef(align = "right", cell = function(v) .an_signed(v)),
         Direction = reactable::colDef(cell = function(v)
           htmltools::tags$span(class = paste("qdb-pill",
             if (identical(v, "Deterioration")) "qp-err" else "qp-ok"), v), minWidth = 120),
