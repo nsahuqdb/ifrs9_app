@@ -139,7 +139,7 @@
 .BL_GROUPS <- list(
   derecognised = "derecognised", new_business = "new_business",
   exposure = "exposure", stage = "stage", rating = "rating",
-  macro = "macro", model = "model", settings = "settings", method = "method",
+  macro = "macro", model = "model", methodology = c("settings", "method"),
   pd_curves = "pd_curves",
   lgd = "lgd", overlay = "overlay", other = "other")
 .BL_ALWAYS <- c("derecognised", "new_business", "exposure", "stage", "rating",
@@ -147,8 +147,7 @@
 .BL_LABEL <- c(derecognised = "Derecognised", new_business = "New business",
                exposure = "Exposure change", stage = "Stage migration",
                rating = "Rating migration", macro = "Macro variable change",
-               model = "Model change", settings = "ECL settings change",
-               method = "Engine change",
+               model = "Model change", methodology = "Methodology change",
                pd_curves = "Macro and model change",
                lgd = "LGD & collateral", overlay = "Overlay", other = "Unexplained")
 .BL_WHAT <- c(
@@ -159,8 +158,7 @@
   rating = "The new rating, on the prior run's PD curves.",
   macro = "The macro inputs: MEV forecasts, scenario weights and severities, and the GDP history, on the prior model.",
   model = "The macro PD model itself: its variables, coefficients, TTC anchor and PDs, and how the variables combine. Zero when the model did not change.",
-  settings = "A setting in model.yml's ecl block differs between the two runs' saved configs -- the repayment shape for contracts with no repayment schedule, the Stage 3 method or the exposure cap. Which one is listed under the chart. Shown only when not zero.",
-  method = "The prior run was priced by another version of the calculation; it is repriced on this one first. Zero when both runs used the same engine. Shown only when not zero.",
+  methodology = "How the ECL is calculated rather than with what: the ECL settings in model.yml (the repayment shape for contracts with no repayment schedule, the Stage 3 method, the exposure cap) and, when the prior run was priced by an earlier version of the engine, the change in the calculation itself. What changed is named under the chart. Shown only when it is not zero.",
   pd_curves = "Macro inputs and model together: one of the runs has no saved config, so the two cannot be told apart.",
   lgd = "Collateral, and so LGD, and the EIR.",
   overlay = "The post-model management overlay.",
@@ -349,7 +347,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             qdb_help(c(
               stats::setNames(as.list(unname(.BL_WHAT)), unname(.BL_LABEL[names(.BL_WHAT)])),
               list("Choosing a level" = "A contract counts in one group: the customer, facility, account type, segment, stage or rating it is in now, or, if it was derecognised, the one it left. So a stage's Prior ECL is what its current contracts had in the prior run, not the prior run's total for that stage: a contract that moved from Stage 1 to Stage 2 is in Stage 2, with its move under Stage migration. The groups add up to the whole book.")),
-              note = "Each contract is repriced from the prior run to the current one a cause at a time, in the order shown, on each run's frozen config, so the steps sum exactly to the closing ECL. Macro variable change and Model change are told apart by pricing once more on PD curves built from the current run's macro inputs and the prior run's model. Model change is the PD model alone. A change in model.yml's ECL settings between the two runs' configs is ECL settings change, and the difference when a prior run was priced by an earlier version of the engine (it is first repriced on this one) is Engine change; each is shown only when not zero. Unexplained appears only if the repricing leaves something over."),
+              note = "Each contract is repriced from the prior run to the current one a cause at a time, in the order shown, on each run's frozen config, so the steps sum exactly to the closing ECL. Macro variable change and Model change are told apart by pricing once more on PD curves built from the current run's macro inputs and the prior run's model. Model change is the PD model alone. The ECL settings in model.yml, and the difference when a prior run was priced by an earlier version of the engine (it is first repriced on this one), are Methodology change, shown only when not zero. Unexplained appears only if the repricing leaves something over."),
             radioButtons(ns("bl_level"), "Compare", choices = .BL_LEVELS, inline = TRUE,
                          selected = isolate(input$bl_level) %||% "book"),
             uiOutput(ns("bl_pick")),
@@ -845,20 +843,19 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         p(class = "small-muted", sprintf(
           "Each contract is repriced from the prior run to this one a cause at a time, in the order shown, so the bars sum exactly to the current ECL (residual %.2f).%s",
           v$residual, if (isTRUE(ch$model_changed)) "" else " The PD model did not change, so Model change is zero.")),
-        # what the ECL settings step is made of, named beside the chart
+        # what the methodology step is made of, named beside the chart
         {
           set_amt <- sum(v$steps$amount[v$steps$key == "settings"])
           if (length(ch$settings) && isTRUE(abs(set_amt) >= 0.5))
             div(class = "alert alert-info", style = "padding:0.5em 0.8em; margin:0.4em 0",
-              tags$b("ECL settings change "),
-              sprintf("The two runs' saved configs differ in the ECL settings, and that moves the provision by %s:",
+              tags$b("Methodology change "),
+              sprintf("The two runs' saved configs differ in the ECL settings, which moves the provision by %s:",
                       .an_signed(set_amt)),
               tags$ul(style = "margin:4px 0", lapply(ch$settings, function(it)
                 tags$li(sprintf("%s: %s \u2192 %s", it$item, it$before, it$after)))),
               span(class = "small-muted", "Set in model.yml (ecl block) of each run's config snapshot."))
         },
-        lapply(Filter(function(n) !startsWith(n, "Repricing the previous run on this engine"), br$notes),
-               function(n) div(class = "alert alert-info", style = "padding:0.5em 0.8em; margin:0.4em 0", n)),
+        lapply(br$notes, function(n) div(class = "alert alert-info", style = "padding:0.5em 0.8em; margin:0.4em 0", n)),
         reactable::reactableOutput(ns("bl_steps")),
         tags$details(class = "qdb-help",
           tags$summary(icon("sliders"), "What changed in the model, the macro inputs and the ECL settings"),
