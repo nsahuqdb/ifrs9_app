@@ -539,53 +539,56 @@ mod_analytics_server <- function(id, runs_root = NULL) {
             p(class = "small-muted", style = "margin-top:8px",
               "Staging is set per customer, so these count customers."),
             qdb_help(list(
-              "Staging rule" = "Stage 3 if DPD &gt; 90 or the default flag is set. Stage 2 if DPD is above the threshold but at most 90, or watchlist, or any local flag, or the portfolio is Tasdeer. Otherwise Stage 1.",
+              "Staging rule" = "Stage 3 if the customer's worst DPD is over 90, or by a Stage 3 override. Stage 2 if DPD is above the threshold but at most 90, or watchlist, or restructured, or by a Stage 2 override, or the portfolio is Tasdeer. Otherwise Stage 1.",
+              "Restructured" = "Local Flag 1, QDB's restructuring flag. Includes restructuring overrides.",
+              "Stage override" = "A reviewed override (the run's stage overrides) that put the customer in Stage 2 or 3.",
               "Tasdeer" = "Collectively assessed as Stage 2 regardless of any other trigger.",
-              "Contagion" = "A customer with any Stage 2 or worse facility has its Stage 1 facilities bumped to Stage 2. Tasdeer is excluded.",
-              "Stage override" = "A stage forced in the source data, which overrides the rule.",
-              "Has trigger vs sole reason" = "Triggers overlap, so \u2018has trigger\u2019 shares add to more than 100%; \u2018sole reason\u2019 counts only contracts where that trigger is the single cause and is additive.",
-              "Staging consistency" = "Re-applies the staging rule and reports only genuine disagreements. Overrides cannot be replayed from the report, so they appear as differences."),
-              note = "Staging is decided per customer, but Tasdeer and contagion act per contract, so the trigger breakdown is contract-level."),
+              "Another facility of the customer" = "Contagion: nothing on the contract itself, but the customer has a facility in Stage 2 or 3. Tasdeer is excluded.",
+              "Local Flag 3 and the default flag" = "Not reasons of their own. The ETL sets Local Flag 3 on every customer its rule puts in Stage 2 and on Stage 2 overrides, and the default flag when the worst DPD is over 90 or on a Stage 3 override, so they restate the stage.",
+              "Staging consistency" = "Re-applies the staging rule and reports only genuine disagreements. A manual stage in the source (AccountMaster.Stage) cannot be replayed from the report, so it appears as a difference."),
+              note = "Staging is decided per customer, but Tasdeer and contagion act per contract, so the Stage 2 reasons are contract-level."),
 
             reactable::reactableOutput(ns("t_stagedist")),
             uiOutput(ns("thr_note")),
             hr(),
             fluidRow(
-              column(6, h5("Why each Stage 2 contract is in Stage 2"), uiOutput(ns("c_s2trig"))),
-              column(6, h5("Trigger combinations"), uiOutput(ns("c_s2overlap")))),
-            hr(), h5("Stage 3 drivers"), reactable::reactableOutput(ns("t_s3")),
+              column(6, h5("Why each Stage 2 contract is in Stage 2"),
+                     p(class = "small-muted", "A contract with more than one reason counts under each."),
+                     uiOutput(ns("c_s2trig"))),
+              column(6, h5("Reason combinations"),
+                     p(class = "small-muted", "Each Stage 2 contract once, so these add up."),
+                     uiOutput(ns("c_s2overlap")))),
+            reactable::reactableOutput(ns("t_s2trig")),
+            hr(), h5("Stage 3 drivers"),
+            p(class = "small-muted", "Each Stage 3 customer once. The default flag is not counted separately: the ETL sets it when the worst DPD is over 90 or on a Stage 3 override."),
+            reactable::reactableOutput(ns("t_s3")),
             hr(), h5("DPD distribution by stage (customers)"), uiOutput(ns("c_dpdstage")),
             hr(), h5("Staging consistency"), uiOutput(ns("t_stagechk"))),
           nav_panel("PD",
-            fluidRow(column(4, uiOutput(ns("pick_rt")))),
-            p(class = "small-muted", "One rating scale at a time."),
             qdb_help(list(
               "Lifetime PD" = "Cumulative probability of default from now to the end of the ECL horizon.",
+              "Stage 3" = "Defaulted, so its PD is 100% and it is provisioned at the full outstanding. The report's PD Lifetime Value for Stage 3 is the curve's figure, which the provision does not use.",
               "Weighted PD" = "Exposure-weighted average PD for the segment \u2014 large exposures count more.",
               "Simple mean PD" = "Unweighted average across contracts. A gap against the weighted figure means the risk sits in a few large names.",
-              "PD bucket" = "The rating's hierarchy number, which selects the PD curve for that portfolio.",
-              "Rating scale" = "Internal and external scales reuse hierarchy 1&ndash;21, so only one scale is shown at a time.",
-              "PD term structure" = "Cumulative probability of default by month, one curve per portfolio and rating bucket, taken from the run's StPD output.",
-              "Marginal PD" = "The increment each month: <code>cumulative PD(m) &minus; cumulative PD(m&minus;1)</code>. This is what the ECL sum uses.",
-              "Rating bucket" = "The rating's hierarchy number. A higher bucket is a worse grade and should carry a higher curve."),
+              "Rating scales" = "Internal (QDB 1+ \u2026 QDB 9) and external (Aaa \u2026 C) scales reuse hierarchy 1&ndash;21, so they are shown side by side, never mixed.",
+              "PD term structure" = "One set of curves for the internally rated book and one for the externally rated, each shared by every portfolio on that scale, from the run's StPD output.",
+              "Marginal PD" = "The increment each month: <code>cumulative PD(m) &minus; cumulative PD(m&minus;1)</code>. This is what the ECL sum uses."),
               note = "ECL coverage should rise as the rating worsens. A kink usually means a rating or curve mapping is wrong rather than a genuine risk pattern."),
 
-            fluidRow(
-              column(6, h5("Lifetime PD distribution"), uiOutput(ns("c_pddist"))),
-              column(6, h5("PD and coverage by rating"), uiOutput(ns("c_pdrating")))),
-            hr(),
-            h5("Exposure-weighted PD by segment"),
+            h5("Exposure-weighted lifetime PD"),
             fluidRow(column(4, selectInput(ns("pd_by"), NULL,
               choices = c("Stage" = "stage", "Portfolio" = "portfolio",
                           "Rating" = "rating", "Account type" = "account_type"),
               width = "100%"))),
-            reactable::reactableOutput(ns("t_pd")),
+            uiOutput(ns("pd_view")),
+            hr(),
+            h5("Lifetime PD distribution"), uiOutput(ns("c_pddist")),
             hr(), h5("PD term structure"),
             fluidRow(
-              column(4, uiOutput(ns("pick_pf"))),
-              column(5, uiOutput(ns("pick_buckets"))),
+              column(3, uiOutput(ns("pick_scale"))),
+              column(6, uiOutput(ns("pick_ratings"))),
               column(3, selectInput(ns("curve_view"), "View",
-                choices = c("Selected curves" = "lines", "All curves as a heatmap" = "heat"),
+                choices = c("Selected ratings" = "lines", "All ratings as a heatmap" = "heat"),
                 width = "100%"))),
             fluidRow(
               column(6, h5("Cumulative"), uiOutput(ns("c_pdterm"))),
@@ -1048,7 +1051,7 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     })
 
     output$c_pddist <- renderUI({
-      h <- pd_distribution(dat_rt()); if (is.null(h)) return(.an_na())
+      h <- pd_distribution(dat_a()); if (is.null(h)) return(.an_na())
       if (!.an_echarts())
         return(qdb_reactable(data.frame(Band = h$band, Contracts = h$contracts),
                              searchable = FALSE, page_size = 10))
@@ -1060,21 +1063,15 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         echarts4r::e_grid(left = 65, right = 20, top = 15, bottom = 75)
     })
 
-    output$c_pdrating <- renderUI({
-      p <- pd_by_rating(dat_rt()); if (is.null(p)) return(.an_na())
-      # order along the scale's own hierarchy, not alphabetically
-      lv <- .rt_levels()
-      if (!is.null(lv)) {
-        p <- an_order_by_rating(p, "group", lv)
-        if (nrow(p) == 0) return(.an_na("No contracts on this rating scale."))
-        p$group <- as.character(p$group)
-      }
+    # by rating: one chart per scale, side by side, best grade first
+    .pd_scale_chart <- function(p) {
+      if (is.null(p) || nrow(p) == 0) return(.an_na("No contracts on this rating scale."))
       if (!.an_echarts())
-        return(qdb_reactable(data.frame(Rating = p$group, `PD %` = .an_pct0(100 * p$pd_w),
-                 `ECL coverage %` = .an_pct0(p$coverage), check.names = FALSE), page_size = 12))
+        return(qdb_reactable(data.frame(Rating = p$rating, `PD %` = .an_pct0(100 * p$pd_w),
+                 `ECL coverage %` = .an_pct0(p$coverage), check.names = FALSE), page_size = 25))
       p$pd_pct <- 100 * p$pd_w
-      echarts4r::e_charts(p, group) |>
-        echarts4r::e_bar(pd_pct, name = "Weighted PD %", bar_width = "45%",
+      echarts4r::e_charts(p, rating) |>
+        echarts4r::e_bar(pd_pct, name = "Weighted lifetime PD %", bar_width = "45%",
                          itemStyle = list(color = .AN_COL$plum_l)) |>
         echarts4r::e_line(coverage, name = "ECL coverage %", symbolSize = 8,
                           lineStyle = list(width = 3),
@@ -1082,7 +1079,20 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         echarts4r::e_x_axis(axisLabel = list(rotate = 40, fontSize = 9)) |>
         echarts4r::e_tooltip(trigger = "axis") |> echarts4r::e_legend(bottom = 0) |>
         echarts4r::e_grid(left = 60, right = 25, top = 15, bottom = 80)
-    })
+    }
+    .pd_scale_table <- function(p) {
+      if (is.null(p) || nrow(p) == 0) return(NULL)
+      df <- data.frame(Rating = p$rating, Contracts = p$contracts, Exposure = p$exposure,
+                       `Weighted PD %` = 100 * p$pd_w, `Simple mean PD %` = 100 * p$pd_mean,
+                       ECL = p$ecl, `ECL coverage %` = p$coverage, check.names = FALSE)
+      .rt(df, defaultPageSize = 25, sortable = FALSE, columns = list(
+        Exposure = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
+        ECL = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
+        `Weighted PD %` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v)),
+        `Simple mean PD %` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v)),
+        `ECL coverage %` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v))))
+    }
+    .pd_scales <- reactive({ pd_by_scale(dat_a(), inp_a()) })
 
     output$c_lgddist <- renderUI({
       h <- lgd_distribution(dat_a())
@@ -2270,21 +2280,6 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         `ECL now` = reactable::colDef(align = "right", cell = function(v) .an_money(v))))
     })
 
-    # ---- rating scale -------------------------------------------------------
-    output$pick_rt <- renderUI({
-      i <- inp_a(); ch <- an_rating_types(i)
-      if (is.null(ch) || length(ch) == 0) return(NULL)
-      selectInput(ns("rating_type"), "Rating scale", choices = ch, width = "100%")
-    })
-    .rt_sel <- reactive({ input$rating_type %||% "1" })
-    # report restricted to the portfolios that use the selected scale
-    dat_rt <- reactive({
-      d <- dat_a(); i <- inp_a()
-      if (is.null(d) || is.null(i) || isFALSE(i$ok)) return(d)
-      an_filter_rating_type(d, i, .rt_sel())
-    })
-    .rt_levels <- reactive({ an_rating_levels(inp_a(), .rt_sel()) })
-
     # ---- staging -----------------------------------------------------------
     # Read on the run's own staging policy: the Stage 2 DPD threshold it froze
     # (config_used/static/staging_thresholds.csv), not an assumed 60. What a
@@ -2316,21 +2311,43 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         `% of ECL` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v, 1))))
     })
 
+    # the run's reviewed stage overrides, so "Stage override" can be named
+    .stage_ov <- reactive({
+      d <- .out_dir_for(input$run_a); if (is.null(d)) return(NULL)
+      run <- if (basename(d) == "Output") dirname(d) else d
+      f <- file.path(run, "overrides", "stage_overrides.csv")
+      if (!file.exists(f)) return(NULL)
+      tryCatch(utils::read.csv(f, colClasses = "character"), error = function(e) NULL)
+    })
+    .s2 <- reactive({ stage2_triggers(dat_a(), .thr(), .stage_ov()) })
+
     output$c_s2trig <- renderUI({
-      t <- stage2_triggers(dat_a(), .thr()); if (is.null(t)) return(.an_na("No Stage 2 customers."))
-      sole <- t[t$basis == "sole", , drop = FALSE]
+      t <- .s2(); if (is.null(t)) return(.an_na("No Stage 2 customers."))
       if (!.an_echarts())
-        return(qdb_reactable(data.frame(Trigger = sole$trigger, Contracts = sole$contracts),
+        return(qdb_reactable(data.frame(Reason = t$trigger, Contracts = t$contracts),
                              searchable = FALSE))
-      sole <- sole[sole$contracts > 0, , drop = FALSE]
-      echarts4r::e_charts(sole, trigger) |>
-        echarts4r::e_pie(contracts, radius = c("42%", "68%"), legend = FALSE,
-                         label = list(formatter = "{b}: {c}", fontSize = 10)) |>
-        echarts4r::e_color(.AN_PAL) |> echarts4r::e_tooltip()
+      t <- t[t$contracts > 0, , drop = FALSE]
+      t <- t[order(t$contracts), , drop = FALSE]
+      echarts4r::e_charts(t, trigger) |>
+        echarts4r::e_bar(contracts, legend = FALSE, bar_width = "60%",
+                         itemStyle = list(color = .AN_COL$plum)) |>
+        echarts4r::e_flip_coords() |> echarts4r::e_tooltip() |>
+        echarts4r::e_grid(left = 165, right = 30, top = 10, bottom = 30)
+    })
+
+    output$t_s2trig <- reactable::renderReactable({
+      t <- .s2(); if (is.null(t)) return(NULL)
+      df <- data.frame(Reason = t$trigger, Contracts = t$contracts, Customers = t$customers,
+                       `% of Stage 2 contracts` = t$pct_contracts, Exposure = t$exposure,
+                       ECL = t$ecl, check.names = FALSE)
+      .rt(df, sortable = FALSE, pagination = FALSE, columns = list(
+        Exposure = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
+        ECL = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
+        `% of Stage 2 contracts` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v, 1))))
     })
 
     output$c_s2overlap <- renderUI({
-      o <- stage2_trigger_overlap(dat_a(), .thr())
+      o <- stage2_trigger_overlap(dat_a(), .thr(), .stage_ov())
       if (is.null(o)) return(.an_na("No Stage 2 customers."))
       if (!.an_echarts())
         return(qdb_reactable(data.frame(Combination = o$combination, Contracts = o$contracts),
@@ -2345,12 +2362,13 @@ mod_analytics_server <- function(id, runs_root = NULL) {
 
 
     output$t_s3 <- reactable::renderReactable({
-      s <- stage3_drivers(dat_a()); if (is.null(s)) return(NULL)
-      df <- data.frame(Driver = s$driver, Customers = s$customers,
+      s <- stage3_drivers(dat_a(), .stage_ov()); if (is.null(s)) return(NULL)
+      df <- data.frame(Reason = s$driver, Customers = s$customers,
                        `% of Stage 3` = s$pct_customers, Exposure = s$exposure,
-                       check.names = FALSE)
+                       ECL = s$ecl, check.names = FALSE)
       .rt(df, sortable = FALSE, pagination = FALSE, columns = list(
         Exposure = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
+        ECL = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
         `% of Stage 3` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v, 1))))
     })
 
@@ -2399,77 +2417,83 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     })
 
     # ---- model curves (from the run's engine inputs) ----------------------
-    output$pick_pf <- renderUI({
-      i <- inp_a(); if (is.null(i) || length(i$pd) == 0) return(NULL)
-      pf <- unique(sub("\\|.*$", "", names(i$pd)))
-      selectInput(ns("curve_pf"), "Portfolio",
-                  choices = c("All" = "", stats::setNames(pf, pf)), width = "100%")
+    # One set of curves per rating scale, shared by every portfolio on it, so
+    # the picker is the scale and the ratings, not portfolio and bucket.
+    .curves <- reactive({ pd_curves_by_rating(inp_a()) })
+    output$pick_scale <- renderUI({
+      c <- .curves(); if (is.null(c)) return(NULL)
+      sc <- intersect(c("Internal", "External"), unique(c$scale))
+      selectInput(ns("curve_scale"), "Rating scale", choices = sc, width = "100%")
     })
-
-    output$pick_buckets <- renderUI({
-      i <- inp_a(); if (is.null(i) || isFALSE(i$ok) || length(i$pd) == 0) return(NULL)
-      pf <- input$curve_pf %||% ""
-      k <- names(i$pd)
-      if (nzchar(pf)) k <- k[startsWith(k, paste0(pf, "|"))]
-      if (length(k) == 0) return(NULL)
-      b <- suppressWarnings(as.integer(sub("^.*\\|", "", k)))
-      ord <- order(b); k <- k[ord]; b <- b[ord]
-      sel <- k[unique(pmax(1, round(seq(1, length(k), length.out = min(5, length(k))))))]
-      selectInput(ns("curve_buckets"), "Rating buckets", choices = stats::setNames(k, paste("Bucket", b)),
-                  selected = sel, multiple = TRUE, width = "100%")
+    .scale_curves <- reactive({
+      c <- .curves(); if (is.null(c)) return(NULL)
+      sc <- input$curve_scale %||% "Internal"
+      c[c$scale == sc, , drop = FALSE]
     })
-
+    output$pick_ratings <- renderUI({
+      c <- .scale_curves(); if (is.null(c) || nrow(c) == 0) return(NULL)
+      r <- unique(c[order(c$bucket), "rating"])
+      sel <- r[unique(round(seq(1, length(r), length.out = min(5, length(r)))))]
+      selectizeInput(ns("curve_ratings"), "Ratings", choices = r, selected = sel,
+                     multiple = TRUE, width = "100%",
+                     options = list(plugins = list("remove_button")))
+    })
     .curve_subset <- function(ts) {
-      sel <- input$curve_buckets
-      if (is.null(ts) || is.null(sel) || length(sel) == 0) return(ts)
-      x <- ts[ts$curve %in% sel, , drop = FALSE]
-      if (nrow(x) == 0) ts else x
+      sel <- input$curve_ratings
+      if (is.null(ts) || is.null(sel) || length(sel) == 0) return(NULL)
+      x <- ts[ts$rating %in% sel, , drop = FALSE]
+      if (nrow(x) == 0) return(NULL)
+      x$rating <- factor(x$rating, levels = unique(ts[order(ts$bucket), "rating"]))
+      x[order(x$rating, x$month), , drop = FALSE]
     }
+    .curve_cols <- function(n) grDevices::hcl.colors(max(n, 2), "viridis")[seq_len(n)]
 
     output$c_pdterm <- renderUI({
-      ts <- pd_term_structure(inp_a(), input$curve_pf %||% "")
-      if (is.null(ts)) return(.an_na("StPD not found in this run's outputs."))
+      ts <- .scale_curves()
+      if (is.null(ts) || nrow(ts) == 0) return(.an_na("StPD not found in this run's outputs."))
       if (identical(input$curve_view, "heat")) {
         h <- ts[ts$month %% 6 == 0, , drop = FALSE]
-        h$bucket <- sub("^.*\\|", "", h$curve)
+        h$rating <- factor(h$rating, levels = unique(ts[order(ts$bucket), "rating"]))
+        h <- h[order(h$rating, h$month), , drop = FALSE]
+        h$rating <- as.character(h$rating)
         if (!.an_echarts())
           return(qdb_reactable(utils::head(h, 60), searchable = FALSE, page_size = 12))
         return(echarts4r::e_charts(h, month) |>
-          echarts4r::e_heatmap(bucket, cum_pd) |>
+          echarts4r::e_heatmap(rating, cum_pd) |>
           echarts4r::e_visual_map(cum_pd,
             inRange = list(color = c("#e7f6f0", "#fdf3e3", "#fce9e9"))) |>
           echarts4r::e_tooltip(formatter = htmlwidgets::JS(
-            "function(p){return 'month '+p.value[0]+', bucket '+p.value[1]+'<br/>cum PD <b>'+Number(p.value[2]).toFixed(2)+'%</b>';}")) |>
-          echarts4r::e_x_axis(name = "Month") |> echarts4r::e_y_axis(name = "Bucket") |>
-          echarts4r::e_grid(left = 70, right = 80, top = 15, bottom = 45))
+            "function(p){return 'month '+p.value[0]+', '+p.value[1]+'<br/>cum PD <b>'+Number(p.value[2]).toFixed(2)+'%</b>';}")) |>
+          echarts4r::e_x_axis(name = "Month") |>
+          echarts4r::e_grid(left = 95, right = 80, top = 15, bottom = 45))
       }
       ts <- .curve_subset(ts)
+      if (is.null(ts)) return(.an_na("Pick one or more ratings to plot."))
       if (!.an_echarts())
         return(qdb_reactable(utils::head(ts, 60), searchable = FALSE, page_size = 12))
-      g <- echarts4r::e_charts(echarts4r::group_by(ts, curve), month) |>
+      echarts4r::e_charts(echarts4r::group_by(ts, rating), month) |>
         echarts4r::e_line(cum_pd, symbol = "none", lineStyle = list(width = 2)) |>
         echarts4r::e_x_axis(name = "Month", nameLocation = "middle", nameGap = 26) |>
         echarts4r::e_y_axis(name = "Cumulative PD %") |>
         echarts4r::e_tooltip(trigger = "axis") |>
         echarts4r::e_legend(type = "scroll", bottom = 0) |>
-        echarts4r::e_color(.AN_PAL) |>
+        echarts4r::e_color(.curve_cols(length(unique(ts$rating)))) |>
         echarts4r::e_grid(left = 70, right = 30, top = 15, bottom = 60)
-      g
     })
 
     output$c_pdmarg <- renderUI({
-      ts <- pd_term_structure(inp_a(), input$curve_pf %||% "", max_month = 60)
+      ts <- .curve_subset(.scale_curves())
       if (is.null(ts)) return(.an_na())
-      ts <- .curve_subset(ts)
+      ts <- ts[ts$month <= 60, , drop = FALSE]
       if (!.an_echarts())
         return(qdb_reactable(utils::head(ts, 60), searchable = FALSE, page_size = 12))
-      echarts4r::e_charts(echarts4r::group_by(ts, curve), month) |>
+      echarts4r::e_charts(echarts4r::group_by(ts, rating), month) |>
         echarts4r::e_line(marginal_pd, symbol = "none", lineStyle = list(width = 2)) |>
         echarts4r::e_x_axis(name = "Month", nameLocation = "middle", nameGap = 26) |>
         echarts4r::e_y_axis(name = "Marginal PD %") |>
         echarts4r::e_tooltip(trigger = "axis") |>
         echarts4r::e_legend(type = "scroll", bottom = 0) |>
-        echarts4r::e_color(.AN_PAL) |>
+        echarts4r::e_color(.curve_cols(length(unique(ts$rating)))) |>
         echarts4r::e_grid(left = 70, right = 30, top = 15, bottom = 60)
     })
 
@@ -2531,20 +2555,33 @@ mod_analytics_server <- function(id, runs_root = NULL) {
         `ECL coverage %` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v))))
     })
 
-    output$t_pd <- reactable::renderReactable({
-      p <- pd_profile(dat_rt(), input$pd_by %||% "stage"); if (is.null(p)) return(NULL)
-      if (identical(input$pd_by, "rating")) {
-        lv <- .rt_levels()
-        if (!is.null(lv)) { p <- an_order_by_rating(p, "group", lv); p$group <- as.character(p$group) }
+    output$pd_view <- renderUI({
+      by <- input$pd_by %||% "stage"
+      if (identical(by, "rating")) {
+        b <- .pd_scales(); if (is.null(b)) return(.an_na())
+        sc <- intersect(c("Internal", "External"), unique(b$scale))
+        part <- function(k) b[b$scale == k, , drop = FALSE]
+        return(tagList(
+          fluidRow(lapply(sc, function(k) column(12 / length(sc),
+            h5(paste(k, "rating")), .pd_scale_chart(part(k))))),
+          p(class = "small-muted", "Best grade first. Stage 3 contracts count at 100%."),
+          fluidRow(lapply(sc, function(k) column(12 / length(sc),
+            h5(paste(k, "rating")), .pd_scale_table(part(k)))))))
       }
-      df <- data.frame(Group = p$group, Contracts = p$contracts, Exposure = p$exposure,
+      p <- pd_profile(dat_a(), by); if (is.null(p)) return(.an_na())
+      lab <- c(stage = "Stage", portfolio = "Portfolio", account_type = "Account type")[[by]]
+      g <- if (identical(by, "stage")) paste("Stage", p$group) else p$group
+      df <- data.frame(g, Contracts = p$contracts, Exposure = p$exposure,
                        `Weighted PD %` = 100 * p$pd_w, `Simple mean PD %` = 100 * p$pd_mean,
                        ECL = p$ecl, check.names = FALSE)
-      .rt(df, defaultPageSize = 12, columns = list(
-        Exposure = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-        ECL = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
-        `Weighted PD %` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v)),
-        `Simple mean PD %` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v))))
+      names(df)[1] <- lab
+      tagList(
+        p(class = "small-muted", "Stage 3 counts at 100%: defaulted, so provisioned at the full outstanding."),
+        .rt(df, defaultPageSize = 12, columns = list(
+          Exposure = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
+          ECL = reactable::colDef(align = "right", cell = function(v) .an_money(v)),
+          `Weighted PD %` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v)),
+          `Simple mean PD %` = reactable::colDef(align = "right", cell = function(v) .an_pct0(v)))))
     })
 
     output$t_floor <- reactable::renderReactable({
