@@ -135,7 +135,7 @@ setwd(.project_root)
 local({
   if (!requireNamespace("ifrs9qdb", quietly = TRUE)) {
     stop("The ifrs9qdb package is not installed.\n",
-         "  install.packages(\"ifrs9qdb_1.5.0.tar.gz\", repos = NULL, type = \"source\")",
+         "  install.packages(\"ifrs9qdb_1.6.0.tar.gz\", repos = NULL, type = \"source\")",
          call. = FALSE)
   }
   library(ifrs9qdb)
@@ -146,10 +146,11 @@ local({
   # before 1.3.0 no customer ECL calculator; before 1.4.0 no named staging
   # reasons, PD by rating scale or PD curves by rating; before 1.4.1 no
   # settings changes in words or prior ECL on stage migration; before 1.5.0
-  # no GCC shift on Macro & scenarios.
-  if (utils::packageVersion("ifrs9qdb") < "1.5.0") {
+  # no GCC shift on Macro & scenarios; before 1.6.0 no macro store or scenario
+  # stress.
+  if (utils::packageVersion("ifrs9qdb") < "1.6.0") {
     warning(sprintf(paste0(
-      "ifrs9qdb %s is older than 1.5.0, which this app needs: the Staging and PD tabs, the customer ECL ",
+      "ifrs9qdb %s is older than 1.6.0, which this app needs: the Staging and PD tabs, the customer ECL ",
       "calculator and the Stress testing tabs call its functions, and before 1.0.3 it ignores ",
       "the ECL settings in config/model.yml, so its figures will not match. ",
       "Run renv::install(\"../ifrs9qdb\") and restart the app."),
@@ -362,6 +363,7 @@ ui <- page_navbar(
     nav_panel("Manage config versions", mod_snapshot_manager_ui("snapshot_manager")),
     nav_panel("Edit config",           mod_snapshot_editor_ui("snapshot_editor")),
     nav_panel("Calculator versions",   mod_calculator_versions_ui("calc_versions")),
+    nav_panel("Macro data",            mod_macro_data_ui("macro_data")),
     "----",
     nav_panel("ECL overlays",            mod_overlays_ui("overlays")),
     nav_panel("Validation suppressions", mod_suppressions_ui("suppressions"))
@@ -421,6 +423,7 @@ server <- function(input, output, session) {
   mod_help_server("help")
   mod_chatbot_server("chatbot")
   mod_calculator_versions_server("calc_versions")
+  mod_macro_data_server("macro_data")
 
   # Latest FinalEclReport for the overlay preview (dry-run), if a run exists.
   latest_report_r <- reactive({

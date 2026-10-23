@@ -311,6 +311,8 @@ mod_analytics_server <- function(id, runs_root = NULL) {
     rep_b <- reactive({ bump(); .report_for(input$run_b) })
     dat_a <- reactive({ a <- rep_a(); if (is.null(a)) NULL else a$data })
     dat_b <- reactive({ b <- rep_b(); if (is.null(b)) NULL else b$data })
+    mod_scenario_stress_server("scn", out_dir = reactive(.out_dir_for(input$run_a)),
+                               inputs = inp_a, report = dat_a)
 
     # ------------------------------------------------------------ KPIs -----
     output$kpis <- renderUI({
@@ -408,6 +410,10 @@ mod_analytics_server <- function(id, runs_root = NULL) {
               actionButton(ns("stp_run"), "Run", icon = icon("play"),
                            class = "btn-sm btn-primary")),
             uiOutput(ns("stp_result"))),
+          nav_panel("Scenario stress",
+            p(class = "small-muted", style = "margin-top:8px",
+              "Shock any macro variable, alone or together, and reprice the run. Nothing in the run is changed."),
+            mod_scenario_stress_ui(ns("scn"))),
           nav_panel("Sensitivity",
             p(class = "small-muted", style = "margin-top:8px",
               "Which lever the provision turns on, and how far it would have to move. Each repricing goes through the same stress function as Stress test."),
